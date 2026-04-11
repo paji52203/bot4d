@@ -29,7 +29,6 @@ class TradingStrategy:
         position_extractor=None,
         position_factory=None,
         exchange_manager=None,
-        price_provider=None,
     ):
         """Initialize the trading strategy with DI pattern.
 
@@ -54,7 +53,6 @@ class TradingStrategy:
         self.extractor = position_extractor
         self.position_factory = position_factory
         self.exchange_manager = exchange_manager
-        self.price_provider = price_provider
 
         # Load any existing position
         self.current_position: Optional[Position] = self.persistence.load_position()
@@ -109,18 +107,12 @@ class TradingStrategy:
         # LIVE EXECUTION CLOSURE
         if self.exchange_manager and self.current_position:
             try:
-                exchange_id = self.config.SUPPORTED_EXCHANGES[0] if self.config.SUPPORTED_EXCHANGES else "bybit"
                 await self.exchange_manager.close_futures_position(
-                    exchange_id,
-                    self.current_position.symbol,
-                    self.current_position.direction,
-                    self.current_position.size
-                )
-                self.logger.info(
-                    "Close order sent: %s %s qty=%.6f",
-                    self.current_position.direction,
-                    self.current_position.symbol,
+                    "bybit", 
+                    self.current_position.symbol, 
+                    self.current_position.direction, 
                     self.current_position.size,
+                    current_price=current_price
                 )
             except Exception as e:
                 self.logger.error("Failed to close live order: %s", e)
@@ -345,28 +337,18 @@ class TradingStrategy:
         direction = "LONG" if signal == "BUY" else "SHORT"
         market_conditions = market_conditions or {}
 
-        # Calculate quantity based on REAL LIVE exchange capital if available
-        exchange_id = self.config.SUPPORTED_EXCHANGES[0] if self.config.SUPPORTED_EXCHANGES else "bybit"
-        
-        # Check for API keys in configured exchange
-        has_keys = False
-        if exchange_id == "tokocrypto":
-            has_keys = bool(self.config.TOKOCRYPTO_API_KEY)
-        elif exchange_id == "bybit":
-            has_keys = bool(self.config.BYBIT_API_KEY)
-        elif exchange_id == "indodax":
-            has_keys = bool(self.config.INDODAX_API_KEY)
-
-        if self.exchange_manager and has_keys:
-            capital = await self.exchange_manager.fetch_wallet_balance(exchange_id, self.config.QUOTE_CURRENCY)
-            self.logger.critical("Using real LIVE %s capital: $%s %s", exchange_id, f"{capital:,.2f}", self.config.QUOTE_CURRENCY)
+        # Calculate quantity based on REAL LIVE Bybit capital if available
+        if self.exchange_manager and hasattr(self.config, 'BYBIT_API_KEY') and self.config.BYBIT_API_KEY:
+            capital = await self.exchange_manager.fetch_available_margin("bybit", self.config.QUOTE_CURRENCY)
+            self.logger.critical("Using real LIVE Bybit Margin: $%s %s", f"{capital:,.2f}", self.config.QUOTE_CURRENCY)
             if capital <= 0:
-                self.logger.warning("Live capital is zero or failed to fetch. Falling back to paper capital.")
-                capital = self.statistics_service.get_current_capital(self.config.DEMO_QUOTE_CAPITAL)
+                self.logger.warning("Live margin is zero or failed to fetch. Cannot execute real trade!")
+                return None
         else:
             capital = self.statistics_service.get_current_capital(self.config.DEMO_QUOTE_CAPITAL)
 
-        # 1. Dynamic Parameter Calculation from RiskManager
+        # Remove AGGRESSIVE MODE: Use AI Risk Assessment Sizing
+        # Delegate Risk Calculation to RiskManager
         risk_assessment = self.risk_manager.calculate_entry_parameters(
             signal=signal,
             current_price=current_price,
@@ -374,32 +356,9 @@ class TradingStrategy:
             confidence=confidence,
             stop_loss=stop_loss,
             take_profit=take_profit,
-            position_size=position_size,
+            position_size=None,
             market_conditions=market_conditions
         )
-
-        # 1b. Check for Manual Leverage Override
-        manual_leverage = 0
-        try:
-            import json, os
-            from pathlib import Path
-            overrides_path = Path(self.config.DATA_DIR) / "manual_overrides.json"
-            if overrides_path.exists():
-                with open(overrides_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    manual_leverage = int(data.get("leverage", 0))
-        except Exception as e:
-            self.logger.warning("Error reading manual leverage override: %s", e)
-            
-        if manual_leverage > 0:
-            self.logger.info("Using Manual Leverage Override: %sx (AI wanted %sx)", manual_leverage, risk_assessment.leverage)
-            risk_assessment.leverage = manual_leverage
-            # Recalculate quantity based on the manual leverage
-            risk_assessment.quantity = (risk_assessment.quote_amount * manual_leverage) / current_price
-
-        if risk_assessment.quantity <= 0:
-            self.logger.warning("Aborting trade: RiskManager/Override returned zero quantity")
-            return None
 
         final_sl = risk_assessment.stop_loss
         final_tp = risk_assessment.take_profit
@@ -409,19 +368,17 @@ class TradingStrategy:
         sl_distance_pct = risk_assessment.sl_distance_pct
         tp_distance_pct = risk_assessment.tp_distance_pct
         rr_ratio = risk_assessment.rr_ratio
+        
+        # Use dynamic leverage from risk assessment
+        leverage = getattr(risk_assessment, "leverage", 10)
 
-        self.logger.info("Position sizing: Capital=$%s, Size=%.2f%%, Allocation=$%s, Leverage=%sx, Quantity=%.6f", 
-                         f"{capital:,.2f}", final_size_pct * 100, f"{risk_assessment.quote_amount:,.2f}", 
-                         risk_assessment.leverage, quantity)
-        
-        # Mandatory ROI Projection Logging
-        self.logger.critical(
-            f"ROI Projection: {risk_assessment.net_roi:+.2f}% (with {risk_assessment.leverage}x leverage) | "
-            f"Est. Fees: {(risk_assessment.entry_fee/risk_assessment.quote_amount)*100:.3f}% | "
-            f"Net: {risk_assessment.net_roi:+.2f}%"
-        )
-        
-        self.logger.info("Risk metrics: SL=%.2f%%, TP=%.2f%%, R/R=%.2f", sl_distance_pct * 100, tp_distance_pct * 100, rr_ratio)
+        self.logger.info("Position sizing: Capital=$%s, Size=%.2f%%, Allocation=$%s, Quantity=%.6f", f"{capital:,.2f}", final_size_pct * 100, f"{risk_assessment.quote_amount:,.2f}", quantity)
+        self.logger.info("Risk metrics: SL=%.2f%%, TP=%.2f%%, R/R=%.2f, Leverage=%dx", sl_distance_pct * 100, tp_distance_pct * 100, rr_ratio, leverage)
+
+        # Fee-Awareness Guardrail
+        if getattr(risk_assessment, "net_roi", 1) <= 0 or quantity <= 0:
+            self.logger.warning("Trade rejected due to Fee-Awareness Guardrail. Fees exceed projected take-profit.")
+            return None
 
         # Create position using Factory
         self.current_position = self.position_factory.create_position(
@@ -436,33 +393,24 @@ class TradingStrategy:
         # LIVE EXECUTION ENTRY
         if self.exchange_manager:
             try:
-                # MANDATORY STEP: Set Dynamic Leverage before opening order
-                if exchange_id == "bybit":
-                    success = await self.exchange_manager.set_leverage(
-                        exchange_id, symbol, int(risk_assessment.leverage)
-                    )
-                    if not success:
-                        self.logger.error("Failed to set leverage. Aborting order execution for safety.")
-                        self.current_position = None
-                        return None
-
                 order = None
-                latest_ws_price = self.price_provider.get_latest_price() if (self.price_provider and exchange_id == "bybit") else None
-                leverage_to_use = int(risk_assessment.leverage) if hasattr(risk_assessment, "leverage") else 10
-
                 if direction == "LONG":
                      order = await self.exchange_manager.create_futures_long(
-                         exchange_id, symbol, quantity, leverage=leverage_to_use, current_price=latest_ws_price
+                         "bybit", symbol, quantity, leverage=leverage, current_price=current_price
                      )
                 else:
                      order = await self.exchange_manager.create_futures_short(
-                         exchange_id, symbol, quantity, leverage=leverage_to_use, current_price=latest_ws_price
+                         "bybit", symbol, quantity, leverage=leverage, current_price=current_price
                      )
                 
                 if order is None:
                      self.logger.warning("Live order rejected by exchange. Aborting local position creation.")
                      self.current_position = None
                      return None
+                
+                # Send async Telegram notification showing correct leverage
+                self._send_telegram_notification(direction, symbol, quantity, leverage, confidence)
+
             except Exception as e:
                 self.logger.error("Failed to execute live sequence: %s", e)
                 self.current_position = None
@@ -723,150 +671,25 @@ class TradingStrategy:
         return tuple(factors)
 
 
-    async def sync_with_exchange(self, symbol: str) -> None:
-        """Sync local position state with actual open positions on the exchange.
-        Case 1: Bot has position, exchange has none  -> manual close detected, clear bot state.
-        Case 2: Exchange has position, bot has none  -> manual open detected, adopt position.
-        Case 3: Both exist but direction mismatch    -> clear bot state to avoid danger.
-        """
-        if not self.exchange_manager:
-            return
+    def _send_telegram_notification(self, direction, symbol, qty, leverage, confidence):
+        """Fire-and-forget Telegram notification for new trade entry."""
         try:
-            exchange_id = (
-                self.config.SUPPORTED_EXCHANGES[0]
-                if self.config.SUPPORTED_EXCHANGES else "bybit"
-            )
-            has_keys = bool(
-                getattr(self.config, "BYBIT_API_KEY", None)
-                or getattr(self.config, "TOKOCRYPTO_API_KEY", None)
-            )
-            if not has_keys:
+            import threading, requests
+            token = getattr(self.config, 'BOT_TOKEN_TELEGRAM', None)
+            chat_id = getattr(self.config, 'TELEGRAM_CHAT_ID', None)
+            if not token or not chat_id:
                 return
-
-            live_positions = await self.exchange_manager.get_open_positions(exchange_id, symbol)
-
-            sym_norm = symbol.replace("/", "").replace(":USDT", "").upper()
-            live_pos = None
-            for p in live_positions:
-                p_sym = p.get("symbol", "").replace("/", "").replace(":USDT", "").upper()
-                contracts = float(p.get("contracts", 0) or 0)
-                if sym_norm in p_sym and contracts > 0:
-                    live_pos = p
-                    break
-
-            # Case 1: manual close
-            if self.current_position and not live_pos:
-                self.logger.warning(
-                    "SYNC: Local %s %s not on exchange -> closed manually. Clearing bot state.",
-                    self.current_position.direction, self.current_position.symbol,
-                )
-                current_price = self.current_position.entry_price
-                if self.price_provider:
-                    ws = self.price_provider.get_latest_price()
-                    if ws:
-                        current_price = ws
-                pnl = self.current_position.calculate_pnl(current_price)
-                closing_fee = self.current_position.calculate_closing_fee(
-                    current_price, self.config.TRANSACTION_FEE_PERCENT
-                )
-                decision = TradeDecision(
-                    timestamp=datetime.now(timezone.utc),
-                    symbol=self.current_position.symbol,
-                    action=f"CLOSE_{self.current_position.direction}",
-                    confidence=self.current_position.confidence,
-                    price=current_price,
-                    stop_loss=self.current_position.stop_loss,
-                    take_profit=self.current_position.take_profit,
-                    position_size=self.current_position.size_pct,
-                    quote_amount=self.current_position.quote_amount,
-                    quantity=self.current_position.size,
-                    fee=closing_fee,
-                    reasoning=f"Manual close detected by sync. PnL:{pnl:+.2f}% Fee:${closing_fee:.4f}",
-                )
-                entry_decision = None
+            emoji = "GREEN LONG" if direction == "LONG" else "RED SHORT"
+            msg = f"{emoji} {symbol} | Qty: {qty:.6f} | Lev: {leverage}x | Conf: {confidence}%"
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            def _send():
                 try:
-                    entry_decision = self.persistence.get_entry_decision_for_position(
-                        self.current_position.entry_time
-                    )
+                    requests.post(url, json={"chat_id": chat_id, "text": msg}, timeout=5)
                 except Exception:
                     pass
-                try:
-                    self.brain_service.update_from_closed_trade(
-                        position=self.current_position, close_price=current_price,
-                        close_reason="manual_close", entry_decision=entry_decision,
-                        market_conditions={},
-                    )
-                except Exception as be:
-                    self.logger.error("Brain update in sync failed: %s", be)
-                await self.persistence.async_save_trade_decision(decision)
-                try:
-                    self.statistics_service.recalculate(self.config.DEMO_QUOTE_CAPITAL)
-                except Exception as se:
-                    self.logger.error("Stats recalc in sync failed: %s", se)
-                await self.persistence.async_save_position(None)
-                self.current_position = None
-                return
-
-            # Case 2: manual open
-            if live_pos and not self.current_position:
-                side = live_pos.get("side", "").upper()
-                direction = "LONG" if side == "LONG" else "SHORT"
-                contracts = float(live_pos.get("contracts", 0) or 0)
-                entry_price = float(
-                    live_pos.get("entryPrice", 0)
-                    or live_pos.get("info", {}).get("avgPrice", 0) or 0
-                )
-                if entry_price <= 0 or contracts <= 0:
-                    self.logger.warning("SYNC: Cannot parse live position: %s", live_pos)
-                    return
-                sl_pct, tp_pct = 0.02, 0.04
-                if direction == "LONG":
-                    stop_loss = entry_price * (1 - sl_pct)
-                    take_profit = entry_price * (1 + tp_pct)
-                else:
-                    stop_loss = entry_price * (1 + sl_pct)
-                    take_profit = entry_price * (1 - tp_pct)
-                quote_amount = contracts * entry_price
-                adopted = Position(
-                    entry_price=entry_price, stop_loss=stop_loss, take_profit=take_profit,
-                    size=contracts, entry_time=datetime.now(timezone.utc),
-                    confidence="MEDIUM", direction=direction, symbol=symbol,
-                    quote_amount=quote_amount, size_pct=0.5,
-                    sl_distance_pct=sl_pct, tp_distance_pct=tp_pct,
-                    rr_ratio_at_entry=tp_pct / sl_pct,
-                )
-                self.current_position = adopted
-                await self.persistence.async_save_position(adopted)
-                self.logger.warning(
-                    "SYNC: Manual %s adopted %s @ $%.2f qty=%.6f. SL=$%.2f TP=$%.2f. "
-                    "AI will refine on next candle.",
-                    direction, symbol, entry_price, contracts, stop_loss, take_profit,
-                )
-                decision = TradeDecision(
-                    timestamp=datetime.now(timezone.utc), symbol=symbol,
-                    action="BUY" if direction == "LONG" else "SELL",
-                    confidence="MEDIUM", price=entry_price,
-                    stop_loss=stop_loss, take_profit=take_profit,
-                    position_size=0.5, quote_amount=quote_amount,
-                    quantity=contracts, fee=0.0,
-                    reasoning="Manual trade adopted from exchange during sync.",
-                )
-                await self.persistence.async_save_trade_decision(decision)
-                return
-
-            # Case 3: both exist, check direction mismatch
-            if live_pos and self.current_position:
-                live_dir = "LONG" if live_pos.get("side","").upper() == "LONG" else "SHORT"
-                if live_dir != self.current_position.direction:
-                    self.logger.error(
-                        "SYNC DIRECTION MISMATCH: local=%s exchange=%s on %s. Clearing local!",
-                        self.current_position.direction, live_dir, symbol,
-                    )
-                    await self.persistence.async_save_position(None)
-                    self.current_position = None
-
-        except Exception as e:
-            self.logger.error("sync_with_exchange error (non-critical): %s", e)
+            threading.Thread(target=_send, daemon=True).start()
+        except Exception:
+            pass
 
     def get_position_context(self, current_price: Optional[float] = None) -> str:
         """Get formatted context about current position for prompts.

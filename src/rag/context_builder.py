@@ -286,8 +286,10 @@ class ContextBuilder:
         if not paragraphs:
             return ""
 
-        # Start with just the first paragraph (Lead)
+        # Start with just the first paragraph (Lead) and truncate it for extreme simplification
         lead_paragraph = paragraphs[0].replace('\n', ' ')
+        if len(lead_paragraph) > 100:
+            lead_paragraph = lead_paragraph[:100] + "..."
 
         # Format header
         header = f"📰 {title}\nSrc: {source} ({published})"

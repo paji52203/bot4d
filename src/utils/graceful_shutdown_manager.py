@@ -148,10 +148,11 @@ class GracefulShutdownManager:
         try:
             app = QApplication.instance()
             if app is None:
-                app = QApplication(sys.argv)
+                # Policy MUST be set before QApplication instance
                 QApplication.setHighDpiScaleFactorRoundingPolicy(
                     Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
                 )
+                app = QApplication(sys.argv)
 
             result = QMessageBox.question(
                 None,

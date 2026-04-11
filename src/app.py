@@ -16,6 +16,7 @@ from src.logger.logger import Logger
 from src.utils.timeframe_validator import TimeframeValidator
 from src.managers.persistence_manager import PersistenceManager
 from src.contracts.model_contract import ModelManagerProtocol
+from src.agents import AgentsOrchestrator
 from src.trading import (
     TradingBrainService,
     TradingStatisticsService,
@@ -111,6 +112,11 @@ class CryptoTradingBot:
         self.current_symbol: Optional[str] = None
         self.current_timeframe: Optional[str] = None
         self.current_check_interval = 0  # 0 means follow timeframe candle
+        # Initialize 5-Agent AI System
+        self.agents_orchestrator = AgentsOrchestrator(
+            logger=self.logger,
+            model_manager=self.model_manager
+        )
 
     async def initialize(self):
         """Initialize all components."""
@@ -207,10 +213,6 @@ class CryptoTradingBot:
             return
 
         self.current_exchange = exchange
-        
-        # Check for manual overrides now that exchange is known
-        await self._check_manual_overrides()
-
         self.logger.info("Starting trading for %s on %s", symbol, exchange_id)
         self.logger.info("Timeframe: %s", self.current_timeframe)
 
@@ -250,6 +252,10 @@ class CryptoTradingBot:
 
         while self.running:
             try:
+                # Add stabilization delay on early loops to prevent rapid hammering if crashing
+                if check_count == 0:
+                    self.logger.info("Initializing stabilization delay (10s)...")
+                    await asyncio.sleep(10)
                 # Check for manual overrides (coin, timeframe, interval)
                 await self._check_manual_overrides()
                 
@@ -281,7 +287,6 @@ class CryptoTradingBot:
         self._log_check_header(check_count)
         
         current_ticker, current_price = await self._fetch_ticker_data()
-        await self.trading_strategy.sync_with_exchange(self.current_symbol)
         await self._check_position_status(current_price, is_candle_close=is_candle_close)
         await self._execute_market_knowledge_update(force_news_update)
         
@@ -290,10 +295,28 @@ class CryptoTradingBot:
         result = await self.market_analyzer.analyze_market(**context_data)
         
         if "error" in result:
-            self.logger.error("Analysis failed: %s", result['error'])
+            self.logger.error("Analysis failed: %s. Entering 5-minute cooldown...", result['error'])
+            await self._interruptible_sleep(300)  # Mandatory 5-minute wait on AI failure (aggressive loop prevention)
             return
         
         self.persistence.save_last_analysis_time()
+
+        # Run multi-agent decision system
+        self.logger.info("Running 5-Agent AI decision system...")
+        agent_decision = await self.agents_orchestrator.process_decision(
+            market_analysis=result,
+            current_price=current_price,
+            symbol=self.current_symbol,
+            timeframe=self.current_timeframe
+        )
+
+        if agent_decision and agent_decision.get("success"):
+            self.logger.info(f"Agent system decision: {agent_decision['decision']} (confidence: {agent_decision['confidence']}%)")
+            # Merge agent decision into analysis result for trading strategy
+            result["agent_decision"] = agent_decision
+        else:
+            self.logger.warning("Agent system failed, proceeding with standard analysis")
+
         decision = await self.trading_strategy.process_analysis(result, self.current_symbol)
         
         if decision:
@@ -739,14 +762,11 @@ class CryptoTradingBot:
                     # changing interval doesn't require analyzer re-init, just sleep duration change
 
                 if changed:
-                    if self.current_exchange is not None:
-                        self.market_analyzer.initialize_for_symbol(
-                            symbol=self.current_symbol,
-                            exchange=self.current_exchange,
-                            timeframe=self.current_timeframe
-                        )
-                        self.logger.critical("Bot successfully applied overrides: %s @ %s", self.current_symbol, self.current_timeframe)
-                    else:
-                        self.logger.warning("Override change detected but exchange not yet ready — will retry next cycle.")
+                    self.market_analyzer.initialize_for_symbol(
+                        symbol=self.current_symbol,
+                        exchange=self.current_exchange,
+                        timeframe=self.current_timeframe
+                    )
+                    self.logger.critical("Bot successfully applied overrides: %s @ %s", self.current_symbol, self.current_timeframe)
         except Exception as e:
             self.logger.error("Error checking manual overrides: %s", e)

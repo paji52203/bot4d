@@ -79,7 +79,7 @@ class AnalysisResultProcessor:
                 model=model
             )
 
-        self.logger.debug("Received response from AI model")
+        self.logger.info("[DONE] Received full analysis/decision from AI Agent.")
         cleaned_response = self._clean_response(complete_response)
 
         parsed_response = self.unified_parser.parse_ai_response(cleaned_response)

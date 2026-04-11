@@ -181,6 +181,11 @@ class ProviderOrchestrator:
                 return result
             self._log_failure(provider)
             last_result = result
+            
+            # Stabilization delay before falling back to the next provider
+            if provider != providers[-1]:
+                self.logger.info("Stabilizing before next provider fallback (10s)...")
+                await asyncio.sleep(10)
         return last_result or InvocationResult(
             success=False,
             response=ChatResponseModel.from_error("No providers available"),

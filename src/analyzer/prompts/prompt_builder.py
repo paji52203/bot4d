@@ -179,9 +179,6 @@ class PromptBuilder:
         sections.extend([
             self.context_builder.build_market_data_section(context.ohlcv_candles),
             self.technical_analysis_formatter.format_technical_analysis(context, self.timeframe),
-            self.context_builder.build_macro_bias_section(
-                getattr(context, 'h1_candles', None), getattr(context, 'h4_candles', None)
-            ),
             self.context_builder.build_market_period_metrics_section(context.market_metrics),
         ])
 

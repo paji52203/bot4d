@@ -120,9 +120,8 @@ class ConsoleNotifier(BaseNotifier):
             print(f"📊 ANALYSIS: {symbol} ({timeframe})")
             print("=" * 60)
 
-            # Silenced the raw AI chain-of-thought printing to prevent PM2 log spam
-            # if reasoning:
-            #     print(f"\n{reasoning}")
+            if reasoning:
+                print(f"\n{reasoning}")
 
             # Use the corrected analysis dict (not re-parsed raw JSON)
             self._print_analysis_data(analysis, timeframe)

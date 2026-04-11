@@ -137,32 +137,10 @@ class MarketDataCollector:
             # Fetch and process market sentiment data
             await self.fetch_and_process_sentiment_data(context)
 
-            # [🆕 UPGRADE: Fetch Macro Bias H1/H4]
-            await self.fetch_macro_bias_data(context)
-
             return True
 
         except Exception as e:
             self.logger.exception("OHLCV fetch failed: %s", str(e))
-            return False
-
-    async def fetch_macro_bias_data(self, context) -> bool:
-        """Fetch H1 and H4 candles for directional bias report."""
-        try:
-            if not self.symbol or not self.data_fetcher:
-                return False
-
-            h1_result = await self.data_fetcher.fetch_candlestick_data(self.symbol, "1h", limit=5)
-            if h1_result is not None and h1_result[0] is not None:
-                context.h1_candles = h1_result[0]
-            
-            h4_result = await self.data_fetcher.fetch_candlestick_data(self.symbol, "4h", limit=5)
-            if h4_result is not None and h4_result[0] is not None:
-                context.h4_candles = h4_result[0]
-                
-            return True
-        except Exception as e:
-            self.logger.warning("Failed to fetch macro bias data: %s", e)
             return False
 
     async def fetch_long_term_historical_data(self, context, days: int = 365) -> bool:

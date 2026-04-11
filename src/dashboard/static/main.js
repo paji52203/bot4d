@@ -220,7 +220,6 @@ async function fetchManualSettings() {
             'setting-work-interval':    data.check_interval_mins,
             'setting-sl':               data.stop_loss_pct,
             'setting-tp':               data.take_profit_pct,
-            'setting-leverage':         data.leverage,
             'setting-initial-capital':  data.initial_capital,
             'setting-min-alloc':        data.min_allocation_pct,
             'setting-max-alloc':        data.max_allocation_pct
@@ -249,10 +248,8 @@ async function saveManualSettingsGroup(group) {
     } else if (group === 'risk') {
         const sl = document.getElementById('setting-sl');
         const tp = document.getElementById('setting-tp');
-        const lev = document.getElementById('setting-leverage');
         if (sl) payload.stop_loss_pct   = parseFloat(sl.value) || 0;
         if (tp) payload.take_profit_pct = parseFloat(tp.value) || 0;
-        if (lev) payload.leverage = parseInt(lev.value) || 0;
     } else if (group === 'capital') {
         const ic   = document.getElementById('setting-initial-capital');
         const minA = document.getElementById('setting-min-alloc');
@@ -369,62 +366,6 @@ function initApp() {
                 }, 3000);
             });
         }
-
-        // System Buy button
-        const btnSysBuy = document.getElementById('btn-system-buy');
-        if (btnSysBuy) {
-            btnSysBuy.addEventListener('click', async () => {
-                const originalHtml = btnSysBuy.innerHTML;
-                btnSysBuy.innerHTML = '<span class="spinner spinner-sm"></span> Buying...';
-                btnSysBuy.disabled = true;
-                try {
-                    const res = await fetch('/api/system/manual_buy', { method: 'POST' });
-                    if (res.ok) {
-                        btnSysBuy.style.background = '#10b981';
-                        btnSysBuy.textContent = '✅ Bought';
-                    } else {
-                        const data = await res.json();
-                        alert('Error: ' + (data.error || 'Failed to buy'));
-                    }
-                } catch (e) {
-                    console.error('Buy request failed', e);
-                }
-                setTimeout(() => {
-                    btnSysBuy.innerHTML = originalHtml;
-                    btnSysBuy.disabled = false;
-                    btnSysBuy.style.background = '#10b981';
-                }, 3000);
-            });
-        }
-
-        // System Sell button
-        const btnSysSell = document.getElementById('btn-system-sell');
-        if (btnSysSell) {
-            btnSysSell.addEventListener('click', async () => {
-                const originalHtml = btnSysSell.innerHTML;
-                btnSysSell.innerHTML = '<span class="spinner spinner-sm"></span> Selling...';
-                btnSysSell.disabled = true;
-                try {
-                    const res = await fetch('/api/system/manual_sell', { method: 'POST' });
-                    if (res.ok) {
-                        btnSysSell.style.background = '#ef4444';
-                        btnSysSell.textContent = '✅ Sold';
-                    } else {
-                        const data = await res.json();
-                        alert('Error: ' + (data.error || 'Failed to sell'));
-                    }
-                } catch (e) {
-                    console.error('Sell request failed', e);
-                }
-                setTimeout(() => {
-                    btnSysSell.innerHTML = originalHtml;
-                    btnSysSell.disabled = false;
-                    btnSysSell.style.background = '#ef4444';
-                }, 3000);
-            });
-        }
-
-        // Initial data load
 
         // Initial data load
         updateAll();
@@ -569,72 +510,6 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             sendOverride(body, btnPct, '⚡ Set %');
-        });
-    }
-});
-
-// Force Scan Wake-Up logic
-document.addEventListener("DOMContentLoaded", () => {
-    const wakeUpBtn = document.getElementById("btn-wake-up");
-    if (wakeUpBtn) {
-        wakeUpBtn.addEventListener("click", () => {
-            const originalHTML = wakeUpBtn.innerHTML;
-            wakeUpBtn.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-width:2px;margin-right:0px;"></span> SCANNIN...';
-            wakeUpBtn.disabled = true;
-            fetch("/api/settings/wake-up", { method: "POST" })
-                .then(r => r.json())
-                .then(data => {
-                    setTimeout(() => {
-                        wakeUpBtn.innerHTML = originalHTML;
-                        wakeUpBtn.disabled = false;
-                        if (data.status === "success" && window.showToast) {
-                            window.showToast("🚀 " + data.message, "success");
-                        } else {
-                            if (window.showToast) window.showToast(data.message, "error");
-                            else alert(data.message);
-                        }
-                    }, 800);
-                })
-                .catch(err => {
-                    console.error(err);
-                    wakeUpBtn.innerHTML = originalHTML;
-                    wakeUpBtn.disabled = false;
-                    if (window.showToast) window.showToast("Failed to wake up bot", "error");
-                    else alert("Failed to wake up bot");
-                });
-        });
-    }
-
-    const btnAutoPilot = document.getElementById("btn-ai-autopilot");
-    if (btnAutoPilot) {
-        btnAutoPilot.addEventListener("click", async () => {
-            if (!confirm("Reset manual configurations and allow AI Auto-Pilot to take control?")) return;
-            const originalHTML = btnAutoPilot.innerHTML;
-            btnAutoPilot.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-width:2px;margin-right:5px;"></span> Resetting...';
-            btnAutoPilot.disabled = true;
-            try {
-                ['setting-sl', 'setting-tp', 'setting-leverage'].forEach(id => {
-                    const el = document.getElementById(id);
-                    if (el) el.value = '';
-                });
-                
-                const payload = { stop_loss_pct: 0, take_profit_pct: 0, leverage: 0 };
-                
-                await fetch('/api/settings/overrides', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                
-                await fetch("/api/settings/wake-up", { method: "POST" });
-                
-                if (window.showToast) window.showToast("🚀 AI Auto-Pilot Active!", "success");
-            } catch(e) {
-                console.error(e);
-            } finally {
-                btnAutoPilot.innerHTML = originalHTML;
-                btnAutoPilot.disabled = false;
-            }
         });
     }
 });

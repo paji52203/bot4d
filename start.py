@@ -9,6 +9,7 @@ import os
 import sys
 import time
 import warnings
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -87,6 +88,15 @@ from src.utils.timeframe_validator import TimeframeValidator
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="docopt")
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="discord")
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="google.genai")
+warnings.filterwarnings("ignore", message=".*unexpected.*", category=UserWarning)
+
+# Silence sentence-transformers/transformers specific loading noise
+logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
+logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+
+# Force Qt to headless mode for VPS if platform not specified
+if "QT_QPA_PLATFORM" not in os.environ:
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 
 def _get_best_device() -> str:
@@ -661,6 +671,15 @@ class CompositionRoot:
     
     def start(self):
         """Main entry point with clean shutdown delegation."""
+        # Add startup delay to prevent rapid crash-loops in PM2
+        time.sleep(5)
+
+        # Policy MUST be set before ANY Qt components are initialized (even implicitly)
+        if PYQT_AVAILABLE:
+            QApplication.setHighDpiScaleFactorRoundingPolicy(
+                Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+            )
+
         # Initialize lock manager
         single_instance_lock = SingleInstanceLock()
         
@@ -669,9 +688,6 @@ class CompositionRoot:
                 app = QApplication.instance()
                 if app is None:
                     app = QApplication(sys.argv)
-                    QApplication.setHighDpiScaleFactorRoundingPolicy(
-                        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
-                    )
                 QMessageBox.critical(
                     None,
                     "Crypto Trading Bot",

@@ -1,35 +1,60 @@
+# Cache & build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# Logs
+logs/
+
+# Data trading & market cache (lokal saja)
+trading_data/
+data/
 
 # API Keys - JANGAN pernah di-share!
-# Cache & build artifacts
-# Cache AI & market data
-# Data trading & market cache (lokal saja)
-# Logs
-# OS files
-# Temp & debug files
-# Virtual Environment
-*.db
-*.egg-info/
-*.log
-*.py[cod]
-*.pyd
-*.pyo
-*.sqlite
-*.tmp
-.DS_Store
-.Python
 .env
-.venv
-Thumbs.db
-__pycache__/
-build/
-cache/
-data/
-debug*.log
-dist/
-env/
 keys.env
-logs/
+*.env.example
+
+# Cache AI & market data
+cache/
+*.db
+*.sqlite
+
+# Temp & debug files
+*.log
+debug*.log
 nohup.out
-trading_data/
-venv/
-.aider*
+*.tmp
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Backup files
+backup/
+*.bak
+
+# Aider files
+.aider.*
+
+# Dashboard static (generated)
+dashboard/
+
+# PM2 logs
+*.log
+
+# Checkpoint files
+COMPARISON.md
+CHANGELOG_BETA.md

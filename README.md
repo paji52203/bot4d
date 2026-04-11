@@ -1,15 +1,69 @@
-# Bybit Trading Bot: Execution Fix (Notional & Real-time)
+# AI Bybit Futures Trading Bot (QRAK Evolution)
 
-This repository contains the fixed files to resolve the Bybit Futures trading issues including the $10 notional validation and real-time trade tracking.
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)
+![Exchange](https://img.shields.io/badge/exchange-Bybit%20Futures-orange.svg)
 
-## 🚀 Key Fixes
-1.  **Bybit WebSocket**: Real-time price tracking using the `bytick.com` domain (ISP bypass).
-2.  **Notional Validation**: Corrected the BTC quantity vs USDT threshold comparison.
-3.  **Marketable Limit Orders**: Replaced market orders with limit orders (0.05% offset) for better fill rates.
-4.  **Graceful Shutdown**: Added proper WebSocket cleanup on exit.
+An advanced, AI-driven trading bot specialized for **Bybit Futures (Linear Perpetual)**. This bot leverage LLM intelligence to execute trades with dynamic risk management, isolated margin protection, and real-time fee awareness.
 
-## 🏃 How to Apply (to VPS)
-1.  **Clone this repo** somewhere on your VPS:
-    `git clone https://github.com/paji52203/bybit-execution-fix.git ~/bybit-fix`
-2.  **Run the apply script** (it will backup your files first):
-    `cd ~/bybit-fix && chmod +x apply_fixes.sh && ./apply_fixes.sh /path/to/your/main/bot/folder`
+## 🚀 Key Features (Bybit Futures focus)
+
+- **🤖 AI Dynamic Leverage**: Automatically scales leverage (2x - 10x) based on AI confidence levels and market volatility.
+- **📊 Dynamic Position Sizing**: Allocates 20% to 50% of capital dynamically per trade, optimizing risk-reward ratios.
+- **🛡️ Isolated Margin Protection**: Automatically enforces Isolated Margin mode for every asset to protect your entire wallet balance.
+- **💰 Fee-Aware Profitability**: AI projects net ROI after deducting Taker fees and Funding rates *before* entering a trade.
+- **📈 Unified Trading Account (UTA)**: Native support for Bybit's Unified Trading Account architecture.
+- **📉 ATR-Based Risk Guardrails**: Uses Average True Range (ATR) for intelligent stop-loss and take-profit placement.
+
+## 🛠️ Installation
+
+### 1. Requirements
+- Python 3.10 or higher
+- A Bybit API Key with **Futures/Contract** permissions enabled.
+
+### 2. Clone the Repository
+```bash
+git clone https://github.com/USER/futures-bybit-bot-qrak.git
+cd futures-bybit-bot-qrak
+```
+
+### 3. Setup Virtual Environment
+```bash
+chmod +x install.sh
+./install.sh
+```
+
+### 4. Configuration
+Create a `keys.env` file (copy from `keys.env.example`):
+```bash
+cp keys.env.example keys.env
+```
+Fill in your `BYBIT_API_KEY`, `BYBIT_API_SECRET`, and chosen `MODEL_NAME` (e.g., Gemini 2.0 Flash).
+
+## 🚦 Usage
+
+### Start Trading
+```bash
+chmod +x run.sh
+./run.sh
+```
+
+### Update Bot (Safe Update)
+To pull latest changes from GitHub without losing your local trade history or logs:
+```bash
+./update.sh
+```
+
+## 📉 Comparison with Original QRAK (Spot)
+
+This version is a complete overhaul of the original QRAK Spot (Tokocrypto/Indodax) bot. See [COMPARISON.md](./COMPARISON.md) for a detailed technical breakdown.
+
+| Improvement | Original (Spot) | Evolution (Futures) |
+| :--- | :--- | :--- |
+| **Leverage** | 1x Only | **Dynamic 2x - 10x** |
+| **Market Type** | Spot Only | **Long & Short** |
+| **Risk Control** | Static 30% | **Dynamic (20-50%)** |
+| **Protection** | Cross Margin | **Mandatory Isolated** |
+
+## ⚖️ Disclaimer
+Trading futures involves significant risk of loss and is not suitable for all investors. Use this bot at your own risk. The authors are not responsible for any financial losses incurred.

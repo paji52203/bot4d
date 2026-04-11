@@ -82,16 +82,6 @@
                 <button id="btn-system-wakeup" style="width: 100%; padding: 8px; margin-top: 10px; border-radius: 4px; background: #3b82f6; color: white; border: none; font-weight: 600; cursor: pointer; display: flex; justify-content: center; align-items: center; gap: 8px; font-family: 'Inter', sans-serif;">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>
                     Wake Up Bot
-
-                
-                <button id="btn-system-buy" style="width: 100%; padding: 8px; margin-top: 10px; border-radius: 4px; background: #10b981; color: white; border: none; font-weight: 600; cursor: pointer; display: flex; justify-content: center; align-items: center; gap: 8px; font-family: 'Inter', sans-serif;">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 18 8 15 8 15 14 18 14 18 20 12 16 6 20 6 14 9 14 9 8 12 2"></polygon></svg>
-                    Buy Position
-                </button>
-                
-                <button id="btn-system-sell" style="width: 100%; padding: 8px; margin-top: 10px; border-radius: 4px; background: #ef4444; color: white; border: none; font-weight: 600; cursor: pointer; display: flex; justify-content: center; align-items: center; gap: 8px; font-family: 'Inter', sans-serif;">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 22 18 16 15 16 15 10 18 10 18 4 12 8 6 4 6 10 9 10 9 16 12 16"></polygon></svg>
-                    Sell Position
                 </button>
             </div>
 
@@ -137,7 +127,7 @@
                         <h2 id="global-tab-title" style="margin-bottom: 5px;">Live Dashboard</h2>
                         <span id="last-updated" style="font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">Updated: --</span>
                     </div>
-                    <button id="btn-wake-up" style="background: var(--accent-orange, #f59e0b); color: white; border: none; padding: 5px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 12px; display: flex; align-items: center; gap: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>FORCE SCAN</button>\n                    <div id="bot-status-bar" style="display: flex; gap: 15px; align-items: center; background: rgba(0,0,0,0.3); padding: 8px 15px; border-radius: 6px; border: 1px solid #333;">
+                    <div id="bot-status-bar" style="display: flex; gap: 15px; align-items: center; background: rgba(0,0,0,0.3); padding: 8px 15px; border-radius: 6px; border: 1px solid #333;">
                         <div style="display: flex; flex-direction: column;">
                             <span style="font-size: 10px; color: #888; text-transform: uppercase;">Active Pair</span>
                             <span id="header-active-pair" style="font-size: 13px; font-weight: 700; color: #3b82f6;">...</span>
@@ -336,14 +326,9 @@
             </div>
             <!-- Tab: Trade Settings (Manual Overrides) -->
             <div id="tab-settings" class="tab-content" role="tabpanel" aria-labelledby="nav-settings">
-                <header class="tab-header" style="justify-content: space-between;">
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <h2>Trade Settings</h2>
-                        <div id="settings-save-status" style="font-size: 12px; color: #10b981; display: none;">✅ Applied!</div>
-                    </div>
-                    <button type="button" id="btn-ai-autopilot" style="padding: 6px 15px; background: linear-gradient(135deg, #8b5cf6, #3b82f6); border: none; border-radius: 4px; color: white; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 5px; box-shadow: 0 0 10px rgba(139, 92, 246, 0.5);">
-                        🤖 AI AUTO-PILOT
-                    </button>
+                <header class="tab-header">
+                    <h2>Trade Settings</h2>
+                    <div id="settings-save-status" style="font-size: 12px; color: #10b981; display: none;">✅ Applied!</div>
                 </header>
 
                 <div style="display: flex; flex-direction: column; gap: 15px; max-width: 700px;">
@@ -414,11 +399,7 @@
                         <div class="panel-header" style="padding: 10px 15px;">
                             <h3 style="font-size: 14px;">2. Risk Management</h3>
                         </div>
-                        <div style="padding: 15px; display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 15px; align-items: end;">
-                            <div>
-                                <label style="display: block; margin-bottom: 5px; font-size: 11px; color: #888;">Leverage (1-150x)</label>
-                                <input type="number" id="setting-leverage" min="0" max="150" placeholder="0 = AI" style="width: 100%; padding: 6px 10px; background: #111; border: 1px solid #333; border-radius: 4px; color: white;">
-                            </div>
+                        <div style="padding: 15px; display: grid; grid-template-columns: 1fr 1fr auto; gap: 15px; align-items: end;">
                             <div>
                                 <label style="display: block; margin-bottom: 5px; font-size: 11px; color: #888;">Manual Stop Loss (%)</label>
                                 <input type="number" id="setting-sl" step="0.1" placeholder="0.0" style="width: 100%; padding: 6px 10px; background: #111; border: 1px solid #333; border-radius: 4px; color: white;">

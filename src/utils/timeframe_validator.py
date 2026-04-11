@@ -70,7 +70,6 @@ class TimeframeValidator:
 
     @classmethod
     def to_minutes(cls, timeframe: str) -> int:
-        timeframe = str(timeframe).lower()
         """
         Convert timeframe to minutes.
 

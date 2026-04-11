@@ -188,9 +188,11 @@ class RagEngine:
         """
         if k is None:
             try:
-                k = int(self.config.RAG_NEWS_LIMIT)
+                # Reduce news limit by 50% as requested for simplification
+                original_limit = int(self.config.RAG_NEWS_LIMIT)
+                k = max(1, original_limit // 2)
             except Exception:
-                k = 3
+                k = 2  # Default to 2 if config fails
 
         if max_tokens is None:
             try:

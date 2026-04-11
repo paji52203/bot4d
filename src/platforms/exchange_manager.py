@@ -96,6 +96,7 @@ class ExchangeManager:
                 exchange_config['options'] = {
                     'defaultType': 'linear',   # USDT perpetual futures
                     'recvWindow': 10000,
+                    'accountType': 'unified',
                 }
 
             exchange = exchange_class(exchange_config)

@@ -1,43 +1,30 @@
 #!/bin/bash
 
-# Folder environment
-VENV_DIR=".venv"
+# Configuration
+BOT_NAME="bybit-bot"
+VENV_DIR="venv"
+PYTHON_BIN="$VENV_DIR/bin/python3"
+SCRIPT="start.py"
 
-echo "🔄 Memeriksa Virtual Environment..."
-if [ ! -d "$VENV_DIR" ]; then
-    echo "📦 Membuat Virtual Environment baru..."
-    python3.11 -m venv $VENV_DIR
-    echo "📥 Install dependensi..."
-    source $VENV_DIR/bin/activate
-    pip3 install -r requirements.txt
-fi
+echo "🔍 Checking status of $BOT_NAME..."
 
-# 1. Bunuh instance lama jika dulu dijalankan manual (tanpa PM2)
-pkill -f "python3 start.py" 2>/dev/null
+# 1. Clean port 8000 if it is lingering
 fuser -k 8000/tcp 2>/dev/null
-sleep 1
 
-# 2. Cek apakah bot sudah berjalan di PM2
-if pm2 list 2>/dev/null | grep -q "bybit-bot"; then
-    echo "🔄 Bot sudah ada di PM2. Merestart bybit-bot agar update..."
-    pm2 restart bybit-bot
+# 2. Check if process exists in PM2
+if pm2 show $BOT_NAME > /dev/null 2>&1; then
+    echo "⚡ $BOT_NAME already exists in PM2."
+    pm2 restart $BOT_NAME
 else
-    echo "🚀 Meluncurkan bybit-bot pertama kali via PM2 (Background)..."
-    pm2 start "$(pwd)/$VENV_DIR/bin/python3 start.py" \
-      --name 'bybit-bot' \
-      --cwd "$(pwd)" \
-      --log "$(pwd)/logs/pm2.log" \
-      --error "$(pwd)/logs/pm2_error.log" \
-      --restart-delay 5000 \
-      --max-restarts 10
+    echo "🚀 Initializing $BOT_NAME in PM2..."
+    pm2 start $SCRIPT --name $BOT_NAME --interpreter $PYTHON_BIN --cwd $(pwd)
     pm2 save
 fi
 
-echo ""
-echo "✅ Bot sekarang berjalan AMAN di latar belakang (Background)!"
-echo "--------------------------------------------------------"
-echo "➡️  Cek log langsung : pm2 logs bybit-bot"
-echo "➡️  Hentikan bot     : pm2 stop bybit-bot"
-echo "➡️  Restart bot      : pm2 restart bybit-bot"
-echo "➡️  Status bot       : pm2 status"
-echo "--------------------------------------------------------"
+echo "✅ Success! Bot is managed by PM2."
+echo "----------------------------------------------------"
+echo "👉 View logs:  pm2 logs $BOT_NAME"
+echo "👉 Stop bot:   pm2 stop $BOT_NAME"
+echo "👉 Start bot:  pm2 start $BOT_NAME"
+echo "👉 Status:     pm2 status"
+echo "----------------------------------------------------"
