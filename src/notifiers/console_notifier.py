@@ -226,22 +226,32 @@ class ConsoleNotifier(BaseNotifier):
             if fields['risk_reward_ratio']:
                 print(f"R:R Ratio:       {fields['risk_reward_ratio']:.2f}")
 
-            trend = fields['trend']
-            if trend:
+            trend = fields.get('trend')
+            if isinstance(trend, dict):
                 direction = trend.get('direction', 'N/A')
                 strength = trend.get('strength', 0)
                 print(f"Trend:           {direction} ({strength}%)")
+            elif isinstance(trend, str) and trend.strip():
+                print(f"Trend:           {trend.strip()}")
 
-            key_levels = fields['key_levels']
-            if key_levels:
+            key_levels = fields.get('key_levels')
+            if isinstance(key_levels, dict):
                 supports = key_levels.get('support', [])
                 resistances = key_levels.get('resistance', [])
+
+                if isinstance(supports, (int, float)):
+                    supports = [supports]
+                if isinstance(resistances, (int, float)):
+                    resistances = [resistances]
+
                 if supports:
-                    support_str = ", ".join([f"${s:,.2f}" for s in supports[:3]])
-                    print(f"Support:         {support_str}")
+                    support_str = ", ".join([f"${float(s):,.2f}" for s in supports[:3] if isinstance(s, (int, float, str))])
+                    if support_str:
+                        print(f"Support:         {support_str}")
                 if resistances:
-                    resistance_str = ", ".join([f"${r:,.2f}" for r in resistances[:3]])
-                    print(f"Resistance:      {resistance_str}")
+                    resistance_str = ", ".join([f"${float(r):,.2f}" for r in resistances[:3] if isinstance(r, (int, float, str))])
+                    if resistance_str:
+                        print(f"Resistance:      {resistance_str}")
 
             print(f"Timeframe:       {timeframe}")
             print("=" * 60)

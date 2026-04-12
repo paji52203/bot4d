@@ -276,12 +276,14 @@ class AnalysisEngine:
                     brain_service, self.context.technical_data
                 )
 
-            # Step 4: Generate AI analysis
-            analysis_result = await self._generate_ai_analysis(
-                provider, model, additional_context, previous_response,
-                previous_indicators, position_context, performance_context,
-                brain_context, last_analysis_time, dynamic_thresholds,
-                precomputed_chart=(chart_image, has_chart_analysis) # Pass precomputed chart
+            # Step 4: DATA-ONLY market package for 5-agent pipeline
+            # NOTE: Legacy analyzer LLM call is intentionally disabled here.
+            # Final decision must come from 5-agent strategy pipeline.
+            analysis_result = self._build_data_only_analysis_result(
+                market_context=market_context,
+                provider=provider,
+                model=model,
+                has_chart_analysis=has_chart_analysis
             )
 
             # Store the result for later publication
@@ -295,6 +297,102 @@ class AnalysisEngine:
         except Exception as e:  # pylint: disable=broad-exception-caught
             self.logger.exception("Analysis failed: %s", e)
             return {"error": str(e), "recommendation": "HOLD"}
+
+    def _build_data_only_analysis_result(
+        self,
+        market_context,
+        provider: Optional[str],
+        model: Optional[str],
+        has_chart_analysis: bool
+    ) -> Dict[str, Any]:
+        """Build non-LLM analysis package for 5-agent orchestrator.
+
+        This keeps scraper/technical pipeline active while preventing legacy
+        prompt+LLM analyzer from running in trading loop.
+        """
+        technical_data = self.context.technical_data or {}
+        current_price = float(self.context.current_price or 0.0)
+
+        def _to_float(v, d=0.0):
+            try:
+                return float(v)
+            except Exception:
+                return float(d)
+
+        # Derive lightweight trend from EMA when available
+        ema20 = technical_data.get('ema_20', technical_data.get('ema20'))
+        ema50 = technical_data.get('ema_50', technical_data.get('ema50'))
+        trend = 'NEUTRAL'
+        if ema20 is not None and ema50 is not None:
+            try:
+                e20 = float(ema20)
+                e50 = float(ema50)
+                if e20 > e50:
+                    trend = 'BULLISH'
+                elif e20 < e50:
+                    trend = 'BEARISH'
+            except Exception:
+                trend = 'NEUTRAL'
+
+        support = 0.0
+        resistance = 0.0
+        sr = technical_data.get('support_resistance')
+        if isinstance(sr, (list, tuple)) and len(sr) >= 2:
+            support = _to_float(sr[0], 0.0)
+            resistance = _to_float(sr[1], 0.0)
+
+        if support == 0.0 and current_price > 0:
+            support = current_price * 0.995
+        if resistance == 0.0 and current_price > 0:
+            resistance = current_price * 1.005
+
+        analysis = {
+            'signal': 'HOLD',
+            'confidence': 50,
+            'trend': trend,
+            'confluence_score': 50,
+            'context_score': 50,
+            'entry': current_price,
+            'stop_loss': support if trend != 'BEARISH' else resistance,
+            'take_profit': resistance if trend != 'BEARISH' else support,
+            'key_levels': {
+                'support': support,
+                'resistance': resistance,
+                'stop_loss': support if trend != 'BEARISH' else resistance,
+            },
+            'reasoning': 'data_only_analysis_for_5_agents'
+        }
+
+        market_micro = self.context.market_microstructure or {}
+        market_overview = self.context.market_overview or {}
+
+        result = {
+            'analysis': analysis,
+            'current_price': current_price,
+            'technical_data': technical_data,
+            'indicators': technical_data,
+            'ohlcv_summary': f"symbol={self.symbol}; timeframe={self.context.timeframe}; price={current_price}",
+            'news': market_context if market_context else '',
+            'sentiment': market_overview,
+            'orderbook': market_micro.get('order_book', {}),
+            'trade_history': {},
+            'raw_response': '',
+            'generated_prompt': '',
+            'article_urls': self.article_urls,
+            'timeframe': self.context.timeframe,
+            'provider': provider or 'data_only_pipeline',
+            'model': model or 'data_only_pipeline',
+            'chart_analysis': has_chart_analysis,
+        }
+
+        # Keep dashboard compatibility fields
+        self.last_generated_prompt = '[DATA-ONLY] legacy analyzer prompt disabled'
+        self.last_prompt_timestamp = datetime.now().isoformat()
+        self.last_system_prompt = '[DATA-ONLY]'
+        self.last_llm_response = ''
+        self.last_response_timestamp = datetime.now().isoformat()
+
+        return result
 
     async def _collect_market_data(self) -> bool:
         """Collect market data using data collector"""

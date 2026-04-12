@@ -189,54 +189,57 @@ class TradingStrategy:
             TradeDecision if action taken, else None
         """
         try:
-            raw_response = analysis_result.get("raw_response", "")
-            current_price = self._extract_price_from_result(analysis_result)
+            # Check if 5-agent system provided a decision - use it directly if available
+            agent_decision = analysis_result.get("agent_decision")
+            if agent_decision and agent_decision.get("success"):
+                decision_data = agent_decision.get("decision", {})
 
-            if not raw_response:
-                self.logger.warning("No response to process")
+                # Normalize manager/nested schema to flat schema expected by TradingStrategy
+                if isinstance(decision_data, dict):
+                    fd = decision_data.get("final_decision", {}) if isinstance(decision_data.get("final_decision", {}), dict) else {}
+                    od = decision_data.get("order_details", {}) if isinstance(decision_data.get("order_details", {}), dict) else {}
+
+                    decision_data = {
+                        "signal": decision_data.get("signal", fd.get("signal", "HOLD")),
+                        "confidence": decision_data.get("confidence", fd.get("confidence", 50)),
+                        "entry": decision_data.get("entry", decision_data.get("entry_price", od.get("entry", od.get("entry_price", analysis_result.get("current_price", 0))))),
+                        "stop_loss": decision_data.get("stop_loss", od.get("stop_loss", 0)),
+                        "take_profit": decision_data.get("take_profit", od.get("take_profit", 0)),
+                        "position_size": decision_data.get("position_size", od.get("position_size", 0.5)),
+                        "reasoning": decision_data.get("reasoning", "5-agent system decision"),
+                    }
+                signal = decision_data.get("signal", "HOLD")
+                confidence = decision_data.get("confidence", 50)
+                entry_price = decision_data.get("entry", 0)
+                stop_loss = decision_data.get("stop_loss", 0)
+                take_profit = decision_data.get("take_profit", 0)
+                position_size = decision_data.get("position_size", 0.5)
+                reasoning = decision_data.get("reasoning", "5-agent system decision")
+                current_price = analysis_result.get("current_price", entry_price)
+                self.logger.info(f"Using 5-agent system decision: {signal} (confidence: {confidence}%)")
+                action = signal if signal in ("BUY", "SELL", "HOLD", "CLOSE", "UPDATE") else "HOLD"
+                if action in ("BUY", "SELL"):
+                    return TradeDecision(
+                        action=action,
+                        symbol=symbol,
+                        confidence=confidence / 100.0,
+                        entry_price=entry_price,
+                        stop_loss=stop_loss,
+                        take_profit=take_profit,
+                        position_size=position_size,
+                        reasoning=reasoning
+                    )
                 return None
-
-            if current_price <= 0:
-                self.logger.error("Invalid current_price extracted, cannot process trade")
-                return None
-
-            # Extract trading info from response
-            signal, confidence, stop_loss, take_profit, position_size, reasoning = \
-                self.extractor.extract_trading_info(raw_response)
-
-            self.logger.info("Extracted Signal: %s, Confidence: %s", signal, confidence)
-
-            # Validate signal
-            if not self.extractor.validate_signal(signal):
-                self.logger.warning("Invalid signal: %s", signal)
-                return None
-
-            # Extract market conditions for brain learning
-            market_conditions = self._extract_market_conditions(analysis_result)
-
-            # Extract confluence factors for brain learning (Feature 1)
-            confluence_factors = self._extract_confluence_factors(analysis_result)
-
-            # Handle existing position
-            if self.current_position:
-                return await self._handle_existing_position(
-                    signal, confidence, stop_loss, take_profit,
-                    current_price, symbol, reasoning, market_conditions
-                )
-
-            # Handle new position
-            if signal in ("BUY", "SELL"):
-                return await self._open_new_position(
-                    signal, confidence, stop_loss, take_profit,
-                    position_size, current_price, symbol, reasoning,
-                    confluence_factors, market_conditions
-                )
-
-            # HOLD or no action
-            if reasoning:
-                self.logger.info("No action taken. Signal: %s. Reasoning: %s", signal, reasoning[:200])
-            else:
-                self.logger.info("No action taken. Signal: %s", signal)
+            # No valid agent payload: force safe HOLD path through Strategy schema
+            self.logger.warning("No valid 5-agent decision, forcing HOLD defaults for Strategy")
+            signal = "HOLD"
+            confidence = 35
+            entry_price = float(analysis_result.get("current_price", 0) or 0)
+            stop_loss = 0.0
+            take_profit = 0.0
+            position_size = 0.0
+            reasoning = "no_valid_agent_decision_safe_hold"
+            self.logger.info("Using fallback structured decision: HOLD (confidence: 35%)")
             return None
 
         except Exception as e:

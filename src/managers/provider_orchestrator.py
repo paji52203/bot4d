@@ -109,7 +109,9 @@ class ProviderOrchestrator:
         *,
         chart: bool = False,
         chart_image: Optional[Union[io.BytesIO, bytes, str]] = None,
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None
     ) -> InvocationResult:
         """
         Invoke a single provider and return structured result.
@@ -155,7 +157,9 @@ class ProviderOrchestrator:
         *,
         chart: bool = False,
         chart_image: Optional[Union[io.BytesIO, bytes, str]] = None,
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None
     ) -> InvocationResult:
         """
         Try providers in order, returning first successful result.
@@ -176,7 +180,7 @@ class ProviderOrchestrator:
                 continue
             effective_model = self.resolve_model(provider, model)
             self._log_attempt(provider, effective_model, chart)
-            result = await self.invoke(provider, messages, chart=chart, chart_image=chart_image, model=model)
+            result = await self.invoke(provider, messages, chart=chart, chart_image=chart_image, model=model, temperature=temperature, max_tokens=max_tokens)
             if result.success and not self._is_rate_limited(result.response):
                 return result
             self._log_failure(provider)
@@ -197,7 +201,9 @@ class ProviderOrchestrator:
         self,
         effective_provider: str,
         messages: List[Dict[str, str]],
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None
     ) -> InvocationResult:
         """
         Get text response using single provider or fallback chain.
@@ -218,7 +224,7 @@ class ProviderOrchestrator:
         if self.is_available(effective_provider):
             effective_model = self.resolve_model(effective_provider, model)
             self.logger.info("Using %s model: %s", self._providers[effective_provider].name, effective_model)
-            return await self.invoke(effective_provider, messages, model=model)
+            return await self.invoke(effective_provider, messages, model=model, temperature=temperature, max_tokens=max_tokens)
         self._log_unavailable_guidance(effective_provider)
         return InvocationResult(
             success=False,
@@ -286,7 +292,17 @@ class ProviderOrchestrator:
                 effective_model, messages, cast(Any, chart_image), metadata.config
             )
         else:
-            response = await metadata.client.chat_completion(effective_model, messages, metadata.config)
+            # Build request params with temperature/max_tokens if provided
+            request_params = {
+                'model': effective_model,
+                'messages': messages,
+                'model_config': metadata.config
+            }
+            if temperature is not None:
+                request_params['temperature'] = temperature
+            if max_tokens is not None:
+                request_params['max_tokens'] = max_tokens
+            response = await metadata.client.chat_completion(**request_params)
         error_type = response.error if response else None
         if error_type and ("overloaded" in error_type or "rate_limit" in error_type) and metadata.paid_client:
             error_reason = "rate limited" if error_type == "rate_limit" else "overloaded"
@@ -348,7 +364,17 @@ class ProviderOrchestrator:
                 model=effective_model
             )
         try:
-            response = await metadata.client.chat_completion(effective_model, messages, metadata.config)
+            # Build request params with temperature/max_tokens if provided
+            request_params = {
+                'model': effective_model,
+                'messages': messages,
+                'model_config': metadata.config
+            }
+            if temperature is not None:
+                request_params['temperature'] = temperature
+            if max_tokens is not None:
+                request_params['max_tokens'] = max_tokens
+            response = await metadata.client.chat_completion(**request_params)
             success = self._is_valid_response(response)
             return InvocationResult(
                 success=success,
@@ -370,7 +396,9 @@ class ProviderOrchestrator:
         messages: List[Dict[str, str]],
         effective_model: str,
         chart: bool,
-        chart_image: Optional[Union[io.BytesIO, bytes, str]]
+        chart_image: Optional[Union[io.BytesIO, bytes, str]],
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None
     ) -> InvocationResult:
         """Invoke OpenRouter provider."""
         if chart and chart_image:
@@ -378,7 +406,17 @@ class ProviderOrchestrator:
                 effective_model, messages, cast(Any, chart_image), metadata.config
             )
         else:
-            response = await metadata.client.chat_completion(effective_model, messages, metadata.config)
+            # Build request params with temperature/max_tokens if provided
+            request_params = {
+                'model': effective_model,
+                'messages': messages,
+                'model_config': metadata.config
+            }
+            if temperature is not None:
+                request_params['temperature'] = temperature
+            if max_tokens is not None:
+                request_params['max_tokens'] = max_tokens
+            response = await metadata.client.chat_completion(**request_params)
         success = self._is_valid_response(response) and not self._is_rate_limited(response)
         return InvocationResult(
             success=success,
@@ -458,7 +496,17 @@ class ProviderOrchestrator:
                 effective_model, messages, cast(Any, chart_image), metadata.config
             )
         else:
-            response = await metadata.client.chat_completion(effective_model, messages, metadata.config)
+            # Build request params with temperature/max_tokens if provided
+            request_params = {
+                'model': effective_model,
+                'messages': messages,
+                'model_config': metadata.config
+            }
+            if temperature is not None:
+                request_params['temperature'] = temperature
+            if max_tokens is not None:
+                request_params['max_tokens'] = max_tokens
+            response = await metadata.client.chat_completion(**request_params)
         success = self._is_valid_response(response)
         return InvocationResult(
             success=success,

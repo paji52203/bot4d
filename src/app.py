@@ -315,7 +315,19 @@ class CryptoTradingBot:
             # Merge agent decision into analysis result for trading strategy
             result["agent_decision"] = agent_decision
         else:
-            self.logger.warning("Agent system failed, proceeding with standard analysis")
+            self.logger.warning("Agent system failed, using safe HOLD decision for Strategy")
+            result["agent_decision"] = {
+                "success": True,
+                "decision": {
+                    "signal": "HOLD",
+                    "confidence": 35,
+                    "entry": current_price or 0,
+                    "stop_loss": 0,
+                    "take_profit": 0,
+                    "position_size": 0.0,
+                    "reasoning": "agent_failed_safe_hold"
+                }
+            }
 
         decision = await self.trading_strategy.process_analysis(result, self.current_symbol)
         

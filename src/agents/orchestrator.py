@@ -1,9 +1,11 @@
-import logging
 import asyncio
-from typing import Any, Dict, Optional
+import json
+import logging
 from datetime import datetime
+from typing import Any, Awaitable, Callable, Dict, Optional
 
-from .base_agent import BaseAgent
+import aiohttp
+
 from .analysis_agent import AnalysisAgent
 from .core_agent import CoreAgent
 from .manager_agent import ManagerAgent
@@ -12,146 +14,385 @@ from .risk_agent import RiskAgent
 
 
 class AgentsOrchestrator:
-    """Optimized 5 AI Agents Orchestrator with Parallel Execution.
-    
-    Architecture:
-    - Agents 1-4 run in PARALLEL (asyncio.gather) for speed
-    - Agent 5 (Manager) synthesizes results sequentially
-    - Fast path: If all agents agree with high confidence, skip synthesis
     """
-    
+    Bot Zero (Main Orchestrator)
+    ----------------------------
+    - Pure dispatcher / traffic controller (no analytical reasoning).
+    - Concurrently calls 4 specialist agents in parallel.
+    - Compiles all specialist JSON into a strict manager template.
+    - Sends compilation to Manager Agent (The Judge).
+    - Executes placeholder trade when final decision is BUY or SELL.
+    """
+
+    SAFE_FALLBACK = {"error": "timeout", "signal": "HOLD"}
+
     def __init__(self, logger: logging.Logger, model_manager: Any):
         self.logger = logger
         self.model_manager = model_manager
-        
-        # Initialize all 5 agents
-        self.analysis_agent = AnalysisAgent(logger, model_manager)
-        self.core_agent = CoreAgent(logger, model_manager)
+
+        # 4 Specialist Agents (Parallel Consensus Star Topology)
+        self.agent_analysis = AnalysisAgent(logger, model_manager)
+        self.agent_core = CoreAgent(logger, model_manager)
+        self.agent_risk = RiskAgent(logger, model_manager)
+        self.agent_market_intel = MarketIntelligenceAgent(logger, model_manager)
+
+        # Manager Agent (Final Judge)
         self.manager_agent = ManagerAgent(logger, model_manager)
-        self.market_agent = MarketIntelligenceAgent(logger, model_manager)
-        self.risk_agent = RiskAgent(logger, model_manager)
-        
-        self.logger.info("5 AI Agents initialized: Analysis, Core, Manager, MarketIntel, Risk")
-    
-    async def process_decision(self, market_analysis: Optional[Dict[str, Any]] = None, current_price: Optional[float] = None, symbol: Optional[str] = None, timeframe: Optional[str] = None) -> Dict[str, Any]:
-        """Run all 5 agents and return final trading decision.
-        
-        Optimized Flow:
-        1. Agents 1-4 run in PARALLEL for speed (asyncio.gather)
-        2. Agent 5 (Manager) synthesizes results
-        3. Fast path: If unanimous agreement with high confidence, skip synthesis
+
+        self.logger.info(
+            "Bot Zero initialized: 4 specialists + 1 manager (parallel consensus)."
+        )
+
+    async def process_decision(
+        self,
+        market_analysis: Optional[Dict[str, Any]] = None,
+        current_price: Optional[float] = None,
+        symbol: Optional[str] = None,
+        timeframe: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
-        start_time = datetime.utcnow()
-        agent_outputs = {}
-        
+        Main entrypoint used by app.
+
+        Flow:
+        1) Fetch/broadcast market payload (mock fetch_market_data for now)
+        2) Run 4 specialist agents concurrently (asyncio.gather)
+        3) Compile strict manager template
+        4) Ask Manager Agent for final JSON decision
+        5) Execute trade placeholder if BUY/SELL
+        """
+        started = datetime.utcnow()
+
         try:
-            market_data = {
-                "current_price": current_price,
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "analysis": market_analysis
-            }
-            
-            # ============================================
-            # PARALLEL EXECUTION: Agents 1-4 run concurrently
-            # ============================================
-            self.logger.info("Agents 1-4/5: Running in PARALLEL...")
-            
-            parallel_tasks = [
-                self._run_analysis_agent(market_data),
-                self._run_market_intel_agent(market_data),
-                self._run_risk_agent(market_data, current_price),
-                self._run_core_agent(market_data)
-            ]
-            
-            results = await asyncio.gather(*parallel_tasks, return_exceptions=True)
-            
-            # Process results
-            analysis_result = results[0] if not isinstance(results[0], Exception) else {"success": False, "error": str(results[0])}
-            market_result = results[1] if not isinstance(results[1], Exception) else {"success": False, "error": str(results[1])}
-            risk_result = results[2] if not isinstance(results[2], Exception) else {"success": False, "error": str(results[2])}
-            core_result = results[3] if not isinstance(results[3], Exception) else {"success": False, "error": str(results[3])}
-            
-            agent_outputs = {
-                "analysis": analysis_result,
-                "market_intelligence": market_result,
-                "risk": risk_result,
-                "core": core_result
-            }
-            
-            # Log results summary
-            for name, result in agent_outputs.items():
-                status = "OK" if result.get("success") else "FAILED"
-                self.logger.info(f"Agent {name}: {status}")
-            
-            # ============================================
-            # Agent 5: Manager Synthesis (Final Decision)
-            # ============================================
-            self.logger.info("Agent 5/5: Manager Agent synthesizing...")
-            final_result = await self.manager_agent.synthesize(agent_outputs)
-            
-            elapsed = (datetime.utcnow() - start_time).total_seconds()
-            self.logger.info(f"All 5 agents completed in {elapsed:.2f}s")
-            
+            market_data = await self._build_broadcast_payload(
+                market_analysis=market_analysis,
+                current_price=current_price,
+                symbol=symbol,
+                timeframe=timeframe,
+            )
+
+            specialist_outputs = await self._run_specialists_parallel(
+                market_data=market_data,
+                current_price=current_price,
+            )
+
+            manager_prompt = self._compile_manager_template(specialist_outputs)
+            manager_json = await self._request_manager_decision(manager_prompt)
+            decision = self._normalize_manager_decision(manager_json, current_price)
+
+            if decision["signal"] in {"BUY", "SELL"}:
+                await self.execute_bybit_trade(decision)
+
+            elapsed = (datetime.utcnow() - started).total_seconds()
             return {
                 "success": True,
-                "decision": final_result.get("data", {}),
-                "agent_outputs": agent_outputs,
-                "processing_time_seconds": elapsed
+                "decision": decision,
+                "agent_outputs": specialist_outputs,
+                "manager_compilation": manager_prompt,
+                "processing_time_seconds": elapsed,
             }
-            
-        except Exception as e:
-            self.logger.error(f"Agents orchestrator error: {e}")
+
+        except Exception as exc:
+            self.logger.error("Bot Zero orchestrator error: %s", exc)
+            elapsed = (datetime.utcnow() - started).total_seconds()
             return {
-                "success": False,
-                "error": str(e),
-                "agent_outputs": agent_outputs
+                "success": True,
+                "decision": {
+                    "signal": "HOLD",
+                    "confidence": 35.0,
+                    "entry": float(current_price or 0),
+                    "stop_loss": 0.0,
+                    "take_profit": 0.0,
+                    "position_size": 0.0,
+                    "reasoning": f"orchestrator_error: {exc}",
+                },
+                "agent_outputs": {},
+                "error": str(exc),
+                "processing_time_seconds": elapsed,
             }
-    
-    # ============================================
-    # Individual agent runner methods
-    # ============================================
-    
-    async def _run_analysis_agent(self, market_data: Dict) -> Dict:
-        """Run Analysis Agent (Agent 1)."""
-        try:
-            return await self.analysis_agent.analyze(market_data)
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
-    async def _run_market_intel_agent(self, market_data: Dict) -> Dict:
-        """Run Market Intelligence Agent (Agent 2)."""
-        try:
-            return await self.market_agent.analyze(market_data)
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
-    async def _run_risk_agent(self, market_data: Dict, current_price: float) -> Dict:
-        """Run Risk Agent (Agent 3)."""
-        try:
-            # Dynamic initial confidence based on market data
-            analysis = market_data.get("analysis", {})
-            confluence = analysis.get("confluence_score", 50)
-            context_score = analysis.get("context_score", 50)
-            initial_confidence = int(confluence * 0.6 + context_score * 0.4)
-            initial_confidence = max(0, min(100, initial_confidence))
-            
-            proposed_signal = {
-                "signal": "HOLD",
-                "confidence": initial_confidence,
-                "entry_price": current_price or 0,
-                "stop_loss": (current_price or 0) * 0.99,
-                "take_profit": (current_price or 0) * 1.02,
-                "position_size": 0.5
+
+    async def _build_broadcast_payload(
+        self,
+        market_analysis: Optional[Dict[str, Any]],
+        current_price: Optional[float],
+        symbol: Optional[str],
+        timeframe: Optional[str],
+    ) -> Dict[str, Any]:
+        """Merge upstream analyzer result + mocked Bybit market fetch for broadcasting."""
+        fetched = await self.fetch_market_data(
+            symbol=symbol or "BTC/USDT",
+            timeframe=timeframe or "15m",
+            current_price=current_price,
+        )
+
+        upstream = market_analysis or {}
+        return {
+            "symbol": symbol or "BTC/USDT",
+            "timeframe": timeframe or "15m",
+            "current_price": float(current_price or fetched.get("last_price") or 0),
+            "analysis": upstream,
+            "ohlcv": fetched.get("ohlcv", []),
+            "orderbook": fetched.get("orderbook", {}),
+            "trade_history": upstream.get("trade_history", {}),
+            "news": upstream.get("news", upstream.get("news_summary", [])),
+            "sentiment": upstream.get("sentiment", {}),
+            "indicators": upstream.get("indicators", upstream.get("technical_indicators", {})),
+            "ohlcv_summary": upstream.get("ohlcv_summary", upstream.get("price_summary", "")),
+        }
+
+    async def fetch_market_data(
+        self,
+        symbol: str,
+        timeframe: str,
+        current_price: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        Dummy async Bybit data fetcher (mock for now).
+
+        Production note:
+        - Replace mocked body with real Bybit REST/WebSocket requests.
+        - Keep this async interface unchanged to preserve orchestration flow.
+        """
+        base_price = float(current_price or 100000.0)
+
+        # Keep aiohttp in the stack as required; no live endpoint call in this mock.
+        timeout = aiohttp.ClientTimeout(total=3)
+        async with aiohttp.ClientSession(timeout=timeout):
+            await asyncio.sleep(0.05)
+
+        ohlcv = [
+            {
+                "open": base_price * 0.998,
+                "high": base_price * 1.002,
+                "low": base_price * 0.996,
+                "close": base_price,
+                "volume": 1234.56,
             }
-            return await self.risk_agent.validate(proposed_signal, {}, market_data)
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
-    async def _run_core_agent(self, market_data: Dict) -> Dict:
-        """Run Core Agent (Agent 4)."""
+            for _ in range(20)
+        ]
+
+        orderbook = {
+            "bids": [[base_price - 5, 1.2], [base_price - 10, 2.1]],
+            "asks": [[base_price + 5, 1.1], [base_price + 10, 2.4]],
+            "spread": 10,
+        }
+
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "last_price": base_price,
+            "ohlcv": ohlcv,
+            "orderbook": orderbook,
+        }
+
+    async def _run_specialists_parallel(
+        self,
+        market_data: Dict[str, Any],
+        current_price: Optional[float],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Run 4 specialists concurrently with retries + safe fallback."""
+        proposal = self._default_proposal(current_price)
+
+        tasks = {
+            "agent_analysis": self._call_agent_with_retry(
+                "agent_analysis",
+                lambda: self.agent_analysis.analyze(market_data),
+            ),
+            "agent_core": self._call_agent_with_retry(
+                "agent_core",
+                lambda: self.agent_core.validate(proposal, market_data.get("analysis", {})),
+            ),
+            "agent_risk": self._call_agent_with_retry(
+                "agent_risk",
+                lambda: self.agent_risk.validate(proposal, market_data, current_price),
+            ),
+            "agent_market_intel": self._call_agent_with_retry(
+                "agent_market_intel",
+                lambda: self.agent_market_intel.analyze(
+                    market_data,
+                    market_data.get("trade_history", {}),
+                ),
+            ),
+        }
+
+        names = list(tasks.keys())
+        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+        outputs: Dict[str, Dict[str, Any]] = {}
+        for name, result in zip(names, results):
+            if isinstance(result, Exception):
+                self.logger.error("%s gather exception: %s", name, result)
+                outputs[name] = dict(self.SAFE_FALLBACK)
+            else:
+                outputs[name] = result
+
+        return outputs
+
+    async def _call_agent_with_retry(
+        self,
+        agent_name: str,
+        call_fn: Callable[[], Awaitable[Dict[str, Any]]],
+        max_retries: int = 2,
+    ) -> Dict[str, Any]:
+        """
+        Call agent and validate JSON output.
+        Retry up to 2 times on invalid/failed payload.
+        """
+        last_error = "unknown_error"
+
+        for attempt in range(max_retries + 1):
+            try:
+                raw = await call_fn()
+                parsed = self._extract_agent_json(raw)
+                if isinstance(parsed, dict):
+                    return parsed
+                last_error = "invalid_json"
+            except Exception as exc:
+                last_error = str(exc)
+                self.logger.warning(
+                    "%s failed attempt %s/%s: %s",
+                    agent_name,
+                    attempt + 1,
+                    max_retries + 1,
+                    exc,
+                )
+
+            if attempt < max_retries:
+                await asyncio.sleep(0.2 * (attempt + 1))
+
+        fallback = dict(self.SAFE_FALLBACK)
+        fallback["agent"] = agent_name
+        fallback["error"] = last_error or "timeout"
+        return fallback
+
+    def _extract_agent_json(self, raw: Any) -> Optional[Dict[str, Any]]:
+        """Normalize different agent return shapes into a JSON dict."""
+        if isinstance(raw, dict):
+            if raw.get("success") is True and isinstance(raw.get("data"), dict):
+                return raw["data"]
+            if "signal" in raw or "error" in raw:
+                return raw
+        return None
+
+    def _compile_manager_template(self, reports: Dict[str, Dict[str, Any]]) -> str:
+        """Compile specialist outputs into exact manager template string."""
+        agent_analysis_json = json.dumps(
+            reports.get("agent_analysis", self.SAFE_FALLBACK), ensure_ascii=False
+        )
+        agent_core_json = json.dumps(
+            reports.get("agent_core", self.SAFE_FALLBACK), ensure_ascii=False
+        )
+        agent_risk_json = json.dumps(
+            reports.get("agent_risk", self.SAFE_FALLBACK), ensure_ascii=False
+        )
+        agent_market_intel_json = json.dumps(
+            reports.get("agent_market_intel", self.SAFE_FALLBACK), ensure_ascii=False
+        )
+
+        return (
+            "[SYSTEM: All agents have submitted their reports. Review the data below and output your final JSON decision.]\n\n"
+            "### A. Analysis Agent Output\n"
+            f"{agent_analysis_json}\n\n"
+            "### B. Core Agent Output\n"
+            f"{agent_core_json}\n\n"
+            "### C. Risk Agent Output\n"
+            f"{agent_risk_json}\n\n"
+            "### D. Market Intelligence Agent Output\n"
+            f"{agent_market_intel_json}"
+        )
+
+    async def _request_manager_decision(self, compiled_prompt: str) -> Dict[str, Any]:
+        """Send compiled specialist report to manager and parse JSON response."""
+        strict_system = (
+            "You are The Judge for a multi-agent crypto trading system. "
+            "Read the compilation and output STRICT JSON only with keys: "
+            "final_decision, confidence, entry, stop_loss, take_profit, position_size, reasoning. "
+            "final_decision must be BUY, SELL, or HOLD."
+        )
+
+        result = await self.manager_agent.call_model(compiled_prompt, strict_system)
+        if result.get("success"):
+            parsed = self.manager_agent.parse_json_response(result.get("response", ""))
+            if isinstance(parsed, dict):
+                return parsed
+
+        return {"final_decision": "HOLD", "confidence": 35, "reasoning": "manager_invalid_json"}
+
+    async def call_llm(self, prompt: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Placeholder generic LLM caller for future provider abstraction.
+        Current flow primarily uses specialist/manager agent classes.
+        """
+        if not self.model_manager:
+            return {"error": "llm_unavailable", "signal": "HOLD"}
+
         try:
-            analysis_data = market_data.get("analysis", {})
-            return await self.core_agent.validate({"signal": "HOLD"}, analysis_data)
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+            response = await self.model_manager.query_async(
+                prompt=f"{prompt}\n\nDATA:\n{json.dumps(data, ensure_ascii=False)}",
+                system_prompt="Return JSON only.",
+                model=None,
+                temperature=0.1,
+                max_tokens=1200,
+            )
+            parsed = self.manager_agent.parse_json_response(str(response))
+            return parsed if isinstance(parsed, dict) else {"raw_response": response}
+        except Exception as exc:
+            self.logger.error("call_llm placeholder failed: %s", exc)
+            return {"error": str(exc), "signal": "HOLD"}
+
+    async def execute_bybit_trade(self, decision_json: Dict[str, Any]) -> None:
+        """
+        Placeholder execution function.
+        Integrate real order execution here in production.
+        """
+        self.logger.info("[PLACEHOLDER] execute_bybit_trade called with: %s", decision_json)
+
+    def _normalize_manager_decision(
+        self,
+        manager_json: Dict[str, Any],
+        current_price: Optional[float],
+    ) -> Dict[str, Any]:
+        """Normalize manager output into app-consumable decision schema."""
+        src = manager_json or {}
+
+        final_decision = (
+            src.get("final_decision")
+            or src.get("signal")
+            or src.get("action")
+            or "HOLD"
+        )
+        signal = str(final_decision).upper().strip()
+        if signal not in {"BUY", "SELL", "HOLD"}:
+            signal = "HOLD"
+
+        def to_float(value: Any, default: float) -> float:
+            try:
+                return float(value)
+            except Exception:
+                return float(default)
+
+        decision = {
+            "signal": signal,
+            "confidence": max(0.0, min(100.0, to_float(src.get("confidence", 35), 35))),
+            "entry": to_float(src.get("entry", current_price or 0), current_price or 0),
+            "stop_loss": to_float(src.get("stop_loss", 0), 0),
+            "take_profit": to_float(src.get("take_profit", 0), 0),
+            "position_size": max(
+                0.0,
+                min(1.0, to_float(src.get("position_size", 0.0), 0.0)),
+            ),
+            "reasoning": str(src.get("reasoning", "manager_decision")),
+        }
+        return decision
+
+    def _default_proposal(self, current_price: Optional[float]) -> Dict[str, Any]:
+        """Default neutral proposal used by core/risk specialists."""
+        price = float(current_price or 0)
+        return {
+            "signal": "HOLD",
+            "confidence": 50,
+            "entry": price,
+            "entry_price": price,
+            "stop_loss": 0,
+            "take_profit": 0,
+            "position_size": 0.0,
+        }

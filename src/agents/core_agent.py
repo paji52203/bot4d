@@ -1,64 +1,150 @@
 import logging
-from typing import Any, Dict
+import json
+import re
+from typing import Any, Dict, Optional
 from .base_agent import BaseAgent
 from .config_loader import config
 
 
 class CoreAgent(BaseAgent):
-    """Identity Controller & Output Format Validator."""
-    
-    # System prompt loaded from centralized config at config/agents_config.json
+    """Core synthesis agent: validates entry feasibility and emits strict schema."""
+
     @property
     def system_prompt(self):
         return config.get_agent_prompt("core_agent")
-    
-    # Fallback prompt kept for reference
-    _FALLBACK_PROMPT = """You are the Core Identity Controller for an Institutional-Grade Crypto Trading System.
 
-Your Mission: Validate and enforce the trading identity, output format, and decision structure.
-You DO NOT perform analysis - you ensure the final output follows strict institutional standards.
-
-Trading Mode: AGGRESSIVE SCALPING
-- Target Profit: 1% - 3% per trade
-- Stop Loss: 0.5% - 1.5% from entry
-
-Decision Thresholds:
-- BUY: confidence >= 70, R/R >= 2.0, 5+ confluences
-- SELL: confidence >= 70, R/R >= 2.0, 5+ confluences
-- HOLD: Any signal < 70 confidence or insufficient confluence
-- CLOSE: Exit existing position immediately
-- UPDATE: Adjust SL/TP of existing position
-
-Validate that the output follows this JSON structure:
-{
-  "signal": "BUY|SELL|HOLD|CLOSE|UPDATE",
-  "confidence": 0-100,
-  "entry_price": number,
-  "stop_loss": number,
-  "take_profit": number,
-  "position_size": 0.0-1.0,
-  "reasoning": "string",
-  "risk_reward_ratio": number
-}
-
-Return ONLY a validated JSON object. No markdown, no explanation."""
-    
     def __init__(self, logger: logging.Logger, model_manager: Any):
-        super().__init__(logger, "CoreAgent", model_manager)
-    
+        super().__init__(logger, "core_agent", model_manager)
+
+    def _extract_first_json_object(self, text: str) -> str:
+        if not text:
+            return ""
+        cleaned = text.strip()
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+
+        start = cleaned.find("{")
+        if start == -1:
+            return ""
+
+        depth = 0
+        for i in range(start, len(cleaned)):
+            ch = cleaned[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return cleaned[start:i + 1]
+        return ""
+
+    def _robust_parse(self, text: str) -> Optional[Dict[str, Any]]:
+        if not text:
+            return None
+
+        parsed = self.parse_json_response(text)
+        if isinstance(parsed, dict):
+            return parsed
+
+        # raw_decode fallback for JSON followed by narrative text
+        try:
+            t = (text or "").strip()
+            start = t.find("{")
+            if start != -1:
+                decoder = json.JSONDecoder()
+                obj, _ = decoder.raw_decode(t[start:])
+                if isinstance(obj, dict):
+                    return obj
+        except Exception:
+            pass
+
+        candidate = self._extract_first_json_object(text)
+        if not candidate:
+            return None
+
+        candidate = re.sub(r"(-?\\d+(?:\\.\\d+)?)%", r"\\1", candidate)
+        try:
+            obj = json.loads(candidate)
+            return obj if isinstance(obj, dict) else None
+        except Exception as e:
+            self.logger.error(f"{self.name} fallback parse failed: {e}")
+            return None
+
+    def _normalize_core_schema(self, data: Dict[str, Any], proposed: Dict[str, Any]) -> Dict[str, Any]:
+        src = data or {}
+
+        # Common wrappers from model outputs
+        if isinstance(src.get("adjustments"), dict):
+            src = src.get("adjustments")
+        elif isinstance(src.get("validation"), dict):
+            src = src.get("validation")
+
+        def to_float(v, d=0.0):
+            try:
+                return float(v)
+            except Exception:
+                return float(d)
+
+        signal = (src.get("signal") or src.get("action") or proposed.get("signal") or "HOLD")
+        signal = str(signal).upper().strip()
+        if signal not in ("BUY", "SELL", "HOLD"):
+            signal = "HOLD"
+
+        confidence = src.get("confidence", proposed.get("confidence", 50))
+        rr = src.get("risk_reward", src.get("risk_reward_ratio", 0))
+
+        # Nested common fallbacks
+        if not rr and isinstance(src.get("risk_management"), dict):
+            rr = src["risk_management"].get("risk_reward_ratio", 0)
+
+        entry_quality = src.get("entry_quality")
+        if not entry_quality:
+            vstat = str(src.get("validation_status", "")).upper()
+            entry_quality = "HIGH" if vstat == "VALID" else ("MEDIUM" if vstat == "PARTIALLY_VALID" else "LOW")
+
+        fakeout_risk = src.get("fakeout_risk")
+        if fakeout_risk is None:
+            # conservative default for missing model field
+            fakeout_risk = 0.5
+
+        reasoning = src.get("reasoning") or src.get("summary") or "core_schema_normalized"
+
+        return {
+            "signal": signal,
+            "confidence": max(0.0, min(100.0, to_float(confidence, 50))),
+            "entry": to_float(src.get("entry", proposed.get("entry", 0)), proposed.get("entry", 0)),
+            "stop_loss": to_float(src.get("stop_loss", proposed.get("stop_loss", 0)), proposed.get("stop_loss", 0)),
+            "take_profit": to_float(src.get("take_profit", proposed.get("take_profit", 0)), proposed.get("take_profit", 0)),
+            "risk_reward": max(0.0, to_float(rr, 0)),
+            "entry_quality": str(entry_quality).upper() if entry_quality else "LOW",
+            "fakeout_risk": max(0.0, min(1.0, to_float(fakeout_risk, 0.5))),
+            "approved": signal in ("BUY", "SELL"),
+            "action": "EXECUTE" if signal in ("BUY", "SELL") else "WAIT",
+            "reasoning": str(reasoning),
+        }
+
     async def validate(self, proposed_decision: Dict[str, Any], analysis_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate a proposed trading decision."""
-        prompt = f"""Validate this proposed trading decision:
+        """Validate a proposed trading decision and return strict Core schema."""
+        prompt = f"""Validate this proposed trading decision and return STRICT JSON only.
 
 Proposed Decision: {proposed_decision}
 Analysis Data: {analysis_data}
 
-Check if it meets the thresholds and format requirements.
-Return validated JSON with validation_status and any adjustments."""
-        
+Required output keys:
+signal, confidence, entry, stop_loss, take_profit, risk_reward, entry_quality, fakeout_risk, approved, action, reasoning
+
+Rules:
+- signal must be BUY|SELL|HOLD
+- confidence 0-100
+- fakeout_risk 0.0-1.0
+- entry_quality HIGH|MEDIUM|LOW
+"""
+
         result = await self.call_model(prompt, self.system_prompt)
-        if result["success"]:
-            parsed = self.parse_json_response(result["response"])
-            if parsed:
-                return {"success": True, "data": parsed}
+        if result.get("success"):
+            parsed = self._robust_parse(result.get("response", ""))
+            if isinstance(parsed, dict):
+                normalized = self._normalize_core_schema(parsed, proposed_decision or {})
+                return {"success": True, "data": normalized}
+
         return {"success": False, "error": result.get("error", "Validation failed")}

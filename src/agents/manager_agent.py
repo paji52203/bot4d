@@ -44,19 +44,91 @@ FINAL OUTPUT FORMAT (STRICT JSON):
 Return ONLY the JSON object. NO markdown, NO explanation."""
     
     def __init__(self, logger: logging.Logger, model_manager: Any):
-        super().__init__(logger, "ManagerAgent", model_manager)
-    
+        super().__init__(logger, "manager_agent", model_manager)
+
+
+    def _compact_agent_outputs(self, agent_outputs: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+        """Reduce token load: keep only fields relevant for final decision."""
+        def pick(d: Dict[str, Any], keys):
+            if not isinstance(d, dict):
+                return {}
+            return {k: d.get(k) for k in keys if k in d}
+
+        out = {}
+        for name, payload in (agent_outputs or {}).items():
+            if not isinstance(payload, dict):
+                out[name] = {"success": False}
+                continue
+
+            data = payload.get("data", payload)
+            compact = {"success": bool(payload.get("success", True))}
+
+            if name == "analysis":
+                compact.update(pick(data, [
+                    "signal", "confidence", "trend", "market_structure", "regime", "strength", "volatility", "market_quality",
+                    "momentum_profile", "volume_profile", "candle_anatomy", "key_levels",
+                    "entry", "stop_loss", "take_profit", "reasoning"
+                ]))
+            elif name == "core":
+                compact.update(pick(data, [
+                    "signal", "confidence", "timeframe_alignment", "entry", "stop_loss", "take_profit",
+                    "risk_reward", "entry_quality", "fakeout_risk", "action", "approved", "reasoning"
+                ]))
+            elif name == "risk":
+                compact.update(pick(data, [
+                    "signal", "confidence", "approved", "veto", "veto_reason", "risk_level", "risk_score",
+                    "position_size", "position_size_usdt", "leverage", "entry", "stop_loss", "take_profit",
+                    "adjusted_entry", "adjusted_stop_loss", "adjusted_take_profit", "adjusted_risk_reward", "account_snapshot", "reasoning"
+                ]))
+            elif name == "market_intelligence":
+                compact.update(pick(data, [
+                    "sentiment", "context_score", "market_condition", "news_impact", "fear_greed",
+                    "news_sentiment", "funding", "market_data", "data_stale", "reasoning"
+                ]))
+            elif name == "bot_d_position":
+                compact.update(pick(data, [
+                    "signal", "confidence", "current_price", "nearest_support", "nearest_resistance",
+                    "price_position", "entry_zone", "wick_signal", "stop_loss", "take_profit", "reasoning"
+                ]))
+            elif name == "_meta":
+                compact.update(pick(data, [
+                    "context_completeness", "instruction"
+                ]))
+            else:
+                compact.update(pick(data, ["signal", "confidence", "reasoning"]))
+
+            out[name] = compact
+
+        return out
+
     async def synthesize(self, agent_outputs: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         """Synthesize all agent outputs into final decision."""
-        prompt = f"""Synthesize these agent outputs into a final trading decision:
+        compact = self._compact_agent_outputs(agent_outputs)
 
-Agent Outputs: {agent_outputs}
+        prompt = f"""You are final trading judge.
+Input is already summarized by 5 specialist bots.
+Decide ONE action: BUY, SELL, or HOLD.
 
-Apply the decision matrix and return the final decision in JSON format."""
-        
+Return STRICT JSON only with this exact schema:
+{{
+  "signal": "BUY|SELL|HOLD",
+  "confidence": 0-100,
+  "entry": number,
+  "stop_loss": number,
+  "take_profit": number,
+  "position_size": 0.0-1.0,
+  "reasoning": "short reason"
+}}
+
+Summaries:
+{compact}
+"""
+
         result = await self.call_model(prompt, self.system_prompt)
-        if result["success"]:
-            parsed = self.parse_json_response(result["response"])
-            if parsed:
+        if result.get("success"):
+            parsed = self.parse_json_response(result.get("response", ""))
+            if parsed and isinstance(parsed, dict):
                 return {"success": True, "data": parsed}
+
         return {"success": False, "error": result.get("error", "Synthesis failed")}
+

@@ -104,16 +104,28 @@ class TelegramNotifier(BaseNotifier):
         payload = {
             "chat_id": self.chat_id,
             "text": message,
-            "parse_mode": "Markdown" # Using basic Markdown for better compatibility
+            "parse_mode": "Markdown"
         }
 
         try:
             async with self.session.post(url, json=payload) as response:
                 if response.status == 200:
                     return await response.json()
-                else:
-                    error_data = await response.text()
-                    self.logger.error("Telegram send_message error (%s): %s", response.status, error_data)
+
+                error_data = await response.text()
+                self.logger.error("Telegram send_message error (%s): %s", response.status, error_data)
+
+                if response.status == 400 and "can't parse entities" in error_data.lower():
+                    plain_payload = {
+                        "chat_id": self.chat_id,
+                        "text": message
+                    }
+                    async with self.session.post(url, json=plain_payload) as plain_resp:
+                        if plain_resp.status == 200:
+                            self.logger.warning("Telegram markdown failed; sent as plain text fallback.")
+                            return await plain_resp.json()
+                        plain_err = await plain_resp.text()
+                        self.logger.error("Telegram plain fallback error (%s): %s", plain_resp.status, plain_err)
         except ClientError as e:
             self.logger.error("Telegram network error: %s", e)
         return None
@@ -159,41 +171,71 @@ class TelegramNotifier(BaseNotifier):
             symbol: str,
             timeframe: str,
             channel_id: Optional[int] = None
-    ) -> None:
-        """Send analysis notification to Telegram."""
+        ) -> None:
+        """Send analysis notification to Telegram.
+
+        Priority:
+        1) Strategy result from 5-agent pipeline (agent_decision.decision)
+        2) Legacy analysis fallback
+        """
         try:
-            analysis = result.get("analysis")
+            decision = ((result.get('agent_decision') or {}).get('decision') or {})
+            if isinstance(decision, dict) and decision.get('signal'):
+                signal = str(decision.get('signal', 'HOLD')).upper()
+                confidence = decision.get('confidence', 0)
+                entry = float(decision.get('entry', 0) or 0)
+                stop_loss = float(decision.get('stop_loss', 0) or 0)
+                take_profit = float(decision.get('take_profit', 0) or 0)
+                position_size = float(decision.get('position_size', 0) or 0)
+                reasoning = str(decision.get('reasoning', 'strategy_5_agent_decision'))
+
+                _, emoji = self.get_action_styling(signal)
+                msg = [
+                    f"📊 *Strategy Decision: {symbol} ({timeframe})*",
+                    f"Signal: {emoji} *{signal}*",
+                    f"Confidence: `{confidence}%`",
+                    f"Entry: `${entry:,.2f}`" if entry > 0 else "Entry: `0`",
+                    f"Stop Loss: `${stop_loss:,.2f}`" if stop_loss > 0 else "Stop Loss: `0`",
+                    f"Take Profit: `${take_profit:,.2f}`" if take_profit > 0 else "Take Profit: `0`",
+                    f"Position Size: `{position_size * 100:.2f}%`",
+                    "━━━━━━━━━━━━━━━━━━━",
+                    f"_{reasoning[:500]}_",
+                ]
+                await self.send_message('\n'.join(msg))
+                return
+
+            analysis = result.get('analysis')
             if not analysis:
                 return
 
-            raw_response = result.get("raw_response", "")
-            reasoning = self.unified_parser.extract_text_before_json(raw_response) if raw_response else ""
-            
-            signal = analysis.get('signal', 'HOLD')
+            raw_response = result.get('raw_response', '')
+            reasoning = self.unified_parser.extract_text_before_json(raw_response) if raw_response else ''
+
+            signal = analysis.get('signal', 'HOLD') if isinstance(analysis, dict) else 'HOLD'
             _, emoji = self.get_action_styling(signal)
+            confidence_legacy = analysis.get('confidence', 0) if isinstance(analysis, dict) else 0
 
             msg = [
                 f"📊 *Analysis: {symbol} ({timeframe})*",
                 f"Signal: {emoji} *{signal}*",
-                f"Confidence: `{analysis.get('confidence', 0)}%`",
-                f"━━━━━━━━━━━━━━━━━━━",
+                f"Confidence: `{confidence_legacy}%`",
+                "━━━━━━━━━━━━━━━━━━━",
             ]
 
-            if analysis.get('entry_price'):
+            if isinstance(analysis, dict) and analysis.get('entry_price'):
                 msg.append(f"Target Entry: `${analysis['entry_price']:,.2f}`")
-            if analysis.get('stop_loss'):
+            if isinstance(analysis, dict) and analysis.get('stop_loss'):
                 msg.append(f"Stop Loss: `${analysis['stop_loss']:,.2f}`")
-            if analysis.get('take_profit'):
+            if isinstance(analysis, dict) and analysis.get('take_profit'):
                 msg.append(f"Take Profit: `${analysis['take_profit']:,.2f}`")
-            
+
             if reasoning:
-                msg.append(f"\n*AI Insights:*")
-                msg.append(f"_{reasoning[:1000]}_")
+                msg.append('\n*AI Insights:*')
+                msg.append(f"_{reasoning[:500]}_")
 
-            await self.send_message("\n".join(msg))
+            await self.send_message('\n'.join(msg))
         except Exception as e:
-            self.logger.error("Error sending Telegram analysis: %s", e)
-
+            self.logger.error('Error sending Telegram analysis: %s', e)
     async def send_position_status(
             self,
             position: Any,

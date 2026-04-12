@@ -54,7 +54,7 @@ Output Format (STRICT JSON):
 Time Budget: 2.5 minutes MAX."""
     
     def __init__(self, logger: logging.Logger, model_manager: Any):
-        super().__init__(logger, "AnalysisAgent", model_manager)
+        super().__init__(logger, "analysis_agent", model_manager)
     
     async def analyze(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
         """Perform technical analysis on market data."""

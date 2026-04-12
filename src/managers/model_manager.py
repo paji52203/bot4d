@@ -227,7 +227,9 @@ class ModelManager(ModelManagerProtocol):
         self,
         prompt: str,
         system_prompt: str = "",
-        model: str = None
+        model: str = None,
+        temperature: float = None,
+        max_tokens: int = None
     ) -> str:
         """Async query method for AI agents."""
         try:
@@ -243,6 +245,8 @@ class ModelManager(ModelManagerProtocol):
                 effective_provider, 
                 messages, 
                 effective_model,
+                temperature=temperature,
+                max_tokens=max_tokens
             )
             
             return await self._process_result(result)
