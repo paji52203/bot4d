@@ -6,7 +6,7 @@ git clone https://github.com/paji52203/bot4d.git
 cd bot4d
 ```
 
-## 2) Setup Python Virtual Environment
+## 2) Create Virtual Environment
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -19,35 +19,31 @@ pip install -r requirements.txt
 ```
 
 ## 4) Configure Environment
-Edit file `.env` and isi kredensial berikut:
+Buat/edit file `.env`, lalu isi:
 - `BYBIT_API_KEY`
 - `BYBIT_API_SECRET`
 - API key provider LLM
-- Telegram/Discord token (opsional)
+- Token Telegram/Discord (opsional)
 
-Jika tersedia template:
+Jika ada template:
 ```bash
 cp .env.example .env
 ```
 
-## 5) Jalankan Bot
+## 5) Run Bot
 ```bash
 python start.py
 ```
 
-## 6) Jalankan dengan PM2 (Opsional)
+## 6) Optional: Run with PM2
 ```bash
 pm2 start ecosystem.config.js
 pm2 save
 pm2 logs
 ```
 
-## 7) Quick Validation (Opsional)
+## 7) Optional: Quick Validation
 ```bash
 python -m py_compile src/agents/orchestrator.py
 pytest -q
 ```
-
-## Important Paths
-- Main orchestrator: `src/agents/orchestrator.py`
-- Main app loop: `src/app.py`
