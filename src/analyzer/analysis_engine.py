@@ -386,9 +386,9 @@ class AnalysisEngine:
         }
 
         # Keep dashboard compatibility fields
-        self.last_generated_prompt = '[DATA-ONLY] legacy analyzer prompt disabled'
+        self.last_generated_prompt = ''
         self.last_prompt_timestamp = datetime.now().isoformat()
-        self.last_system_prompt = '[DATA-ONLY]'
+        self.last_system_prompt = ''
         self.last_llm_response = ''
         self.last_response_timestamp = datetime.now().isoformat()
 

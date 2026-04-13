@@ -174,8 +174,10 @@ Rules:
         rescue_prompt = (
             "Return ONLY valid JSON object with keys: "
             "signal, confidence, entry, stop_loss, take_profit, risk_reward, "
-            "entry_quality, fakeout_risk, approved, action, reasoning.\n"
-            f"Proposed Decision: {proposed_decision}\n"
+            "entry_quality, fakeout_risk, approved, action, reasoning.
+"
+            f"Proposed Decision: {proposed_decision}
+"
             f"Analysis Data: {analysis_data}"
         )
         rescue = await self.call_model(

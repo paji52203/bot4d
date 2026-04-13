@@ -170,16 +170,16 @@ Rules:
 
         # Rescue retry for empty/invalid model output (e.g. only markdown fence)
         self.logger.warning("%s primary parse failed; running rescue retry", self.name)
-
         rescue_prompt = (
             "Return ONLY valid JSON object with keys: "
             "signal, confidence, entry, stop_loss, take_profit, risk_reward, "
-            "entry_quality, fakeout_risk, approved, action, reasoning.\n"
-            f"Proposed Decision: {proposed_decision}\n"
+            "entry_quality, fakeout_risk, approved, action, reasoning.
+"
+            f"Proposed Decision: {proposed_decision}
+"
             f"Analysis Data: {analysis_data}"
         )
         rescue = await self.call_model(
-
             rescue_prompt,
             "You are Core Agent. Output JSON only, no markdown, no prose."
         )

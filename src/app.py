@@ -491,11 +491,20 @@ class CryptoTradingBot:
             )
     
     def _save_analysis_data(self, result: Dict[str, Any]):
-        """Save analysis response and technical data"""
+        """Save analysis/agent response and prompt for dashboard/history compatibility."""
         raw_response = result.get("raw_response", "")
-        if raw_response:
-            technical_data = result.get("technical_data")
-            generated_prompt = result.get("generated_prompt")
+        technical_data = result.get("technical_data")
+        generated_prompt = result.get("generated_prompt")
+
+        agent_decision = result.get("agent_decision") if isinstance(result, dict) else None
+        if isinstance(agent_decision, dict):
+            if not generated_prompt:
+                generated_prompt = agent_decision.get("manager_compilation") or generated_prompt
+            if not raw_response:
+                decision_payload = agent_decision.get("decision", {})
+                raw_response = json.dumps({"agent_decision": decision_payload}, ensure_ascii=False)
+
+        if raw_response or generated_prompt:
             self.persistence.save_previous_response(raw_response, technical_data, generated_prompt)
 
     async def _fetch_current_ticker(self) -> Optional[Dict[str, Any]]:

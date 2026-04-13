@@ -230,32 +230,66 @@ class DefiLlamaClient:
             return 0.0
 
     async def get_dex_volumes(self) -> Optional[DexVolumeData]:
-        """Fetch DEX volume overview."""
+        """Fetch DEX volume overview with robust JSON parsing."""
         url = f"{self.BASE_URL}/overview/dexs"
-        try:
-            session = await self._get_session()
-            async with session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    protocols = data.get("protocols", [])
-                    # Sort by 24h volume
+        session = await self._get_session()
+
+        for attempt in range(2):
+            try:
+                async with session.get(url) as response:
+                    if response.status != 200:
+                        self.logger.warning("DefiLlama DEX API error: %s", response.status)
+                        return None
+
+                    raw_text = await response.text()
+                    if not raw_text:
+                        self.logger.warning("DefiLlama DEX API returned empty body")
+                        return None
+
+                    try:
+                        data = json.loads(raw_text)
+                    except json.JSONDecodeError as je:
+                        # Lightweight salvage for truncated payload: cut at last closing brace
+                        trimmed = raw_text[:raw_text.rfind('}') + 1] if '}' in raw_text else ''
+                        if trimmed:
+                            try:
+                                data = json.loads(trimmed)
+                            except Exception:
+                                if attempt == 0:
+                                    self.logger.warning("DEX volumes JSON parse failed (attempt %s/2): %s", attempt + 1, je)
+                                    await asyncio.sleep(0.3)
+                                    continue
+                                self.logger.warning("Error fetching DEX volumes: malformed JSON after retry: %s", je)
+                                return None
+                        else:
+                            if attempt == 0:
+                                self.logger.warning("DEX volumes JSON parse failed (attempt %s/2): %s", attempt + 1, je)
+                                await asyncio.sleep(0.3)
+                                continue
+                            self.logger.warning("Error fetching DEX volumes: malformed JSON after retry: %s", je)
+                            return None
+
+                    protocols = data.get("protocols", []) if isinstance(data, dict) else []
                     top_protocols = sorted(
-                        [p for p in protocols if self._safe_float(p.get("total24h")) > 0],
+                        [p for p in protocols if isinstance(p, dict) and self._safe_float(p.get("total24h")) > 0],
                         key=lambda x: self._safe_float(x.get("total24h")),
                         reverse=True
                     )[:5]
 
                     return DexVolumeData(
-                        total_24h=self._safe_float(data.get("total24h")),
-                        change_1d=self._safe_float(data.get("change_1d")),
+                        total_24h=self._safe_float(data.get("total24h") if isinstance(data, dict) else 0),
+                        change_1d=self._safe_float(data.get("change_1d") if isinstance(data, dict) else 0),
                         top_protocols=top_protocols
                     )
-                else:
-                    self.logger.warning("DefiLlama DEX API error: %s", response.status)
-                    return None
-        except Exception as e:
-            self.logger.error("Error fetching DEX volumes: %s", e)
-            return None
+            except Exception as e:
+                if attempt == 0:
+                    self.logger.warning("DEX volumes request failed (attempt %s/2): %s", attempt + 1, e)
+                    await asyncio.sleep(0.3)
+                    continue
+                self.logger.warning("Error fetching DEX volumes: %s", e)
+                return None
+
+        return None
 
     async def get_fees_data(self) -> Optional[FeesData]:
         """Fetch fees and revenue overview."""

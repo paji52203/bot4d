@@ -26,13 +26,6 @@ class AgentsOrchestrator:
 
     SAFE_FALLBACK = {"error": "timeout", "signal": "HOLD"}
 
-    STRICT_OVERRIDE = """
-[CRITICAL SYSTEM OVERRIDE - MANDATORY RULES]
-1. APEX INDEPENDENCE: You are the Supreme Judge. The 4 sub-bots are mere data-gatherers. If their consensus is partial, conflicting, or missing, DO NOT SKIP AND DO NOT ABORT. You MUST synthesize the raw market data yourself and output a final decision. You do not vote; you decide.
-2. MANDATORY RISK SIGNAL: The JSON block `Analysis.Core.Risk` MUST be present and fully populated with Risk_Level, Stop_Loss_Logic, and Invalidation_Point. Any output without this block is a critical failure.
-3. NO EXCUSES: If sub-bot data is corrupted, use the raw data.
-"""
-
     def __init__(self, logger: logging.Logger, model_manager: Any):
         self.logger = logger
         self.model_manager = model_manager
@@ -80,30 +73,8 @@ class AgentsOrchestrator:
                 current_price=current_price,
             )
 
-            reports_ok, report_issues = self._validate_specialist_reports_complete(specialist_outputs)
             manager_prompt = self._compile_manager_template(specialist_outputs)
-
-            if not reports_ok:
-                self.logger.warning(
-                    "Specialist reports partial/invalid (%s). Forcing Hakim independent decision from raw market data.",
-                    report_issues,
-                )
-                manager_prompt = (
-                    "WARNING: SUB-BOT REPORTS CORRUPTED/PARTIAL. IGNORE THEM. "
-                    "RELY EXCLUSIVELY ON RAW MARKET DATA TO MAKE YOUR DECISION.\n\n"
-                    f"REPORT_ISSUES: {', '.join(report_issues)}\n\n"
-                    f"RAW_MARKET_DATA:\n{json.dumps(market_data, ensure_ascii=False)}\n\n"
-                    "ORIGINAL_SPECIALIST_REPORTS:\n"
-                    f"{manager_prompt}"
-                )
-
-            manager_json = await self._request_hakim_decision(
-                manager_prompt,
-                specialist_outputs,
-                current_price,
-                market_data,
-                reports_ok,
-            )
+            manager_json = await self._request_hakim_decision(manager_prompt, specialist_outputs, current_price)
             decision = self._normalize_manager_decision(manager_json, current_price)
 
             if decision["signal"] in {"BUY", "SELL"}:
@@ -257,22 +228,22 @@ class AgentsOrchestrator:
     async def _call_agent_with_retry(
         self,
         agent_name: str,
-        call_fn: Callable[[], Awaitable[Any]],
+        call_fn: Callable[[], Awaitable[Dict[str, Any]]],
         max_retries: int = 2,
     ) -> Dict[str, Any]:
         """
-        Call agent and collect plain-text SITREP output.
-        Retry up to 2 times on empty/failed payload.
+        Call agent and validate JSON output.
+        Retry up to 2 times on invalid/failed payload.
         """
         last_error = "unknown_error"
 
         for attempt in range(max_retries + 1):
             try:
                 raw = await call_fn()
-                text = self._extract_agent_text(raw)
-                if text:
-                    return {"text": text, "agent": agent_name}
-                last_error = "empty_text_output"
+                parsed = self._extract_agent_json(raw)
+                if isinstance(parsed, dict):
+                    return parsed
+                last_error = "invalid_json"
             except Exception as exc:
                 last_error = str(exc)
                 self.logger.warning(
@@ -286,37 +257,10 @@ class AgentsOrchestrator:
             if attempt < max_retries:
                 await asyncio.sleep(0.2 * (attempt + 1))
 
-        return {
-            "text": "AGENT DOWN - NO DATA GATHERED",
-            "agent": agent_name,
-            "error": last_error or "timeout",
-        }
-
-    def _extract_agent_text(self, raw: Any) -> str:
-        """Convert agent output into concise plain-text SITREP."""
-        if raw is None:
-            return ""
-
-        if isinstance(raw, str):
-            return raw.strip()
-
-        # common envelope: {success: true, data: ...}
-        if isinstance(raw, dict) and raw.get("success") is True and "data" in raw:
-            raw = raw.get("data")
-
-        if isinstance(raw, dict):
-            lines = []
-            for k, v in raw.items():
-                if isinstance(v, (dict, list)):
-                    lines.append(f"{k}: {json.dumps(v, ensure_ascii=False)}")
-                else:
-                    lines.append(f"{k}: {v}")
-            return "\n".join(lines).strip()
-
-        if isinstance(raw, list):
-            return "\n".join(str(x) for x in raw).strip()
-
-        return str(raw).strip()
+        fallback = dict(self.SAFE_FALLBACK)
+        fallback["agent"] = agent_name
+        fallback["error"] = last_error or "timeout"
+        return fallback
 
     def _normalize_confidence_scale(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize confidence fields from 0..1 scale into 0..100 scale."""
@@ -346,73 +290,8 @@ class AgentsOrchestrator:
                 return self._normalize_confidence_scale(raw)
         return None
 
-    def _validate_specialist_reports_complete(self, reports: Dict[str, Dict[str, Any]]) -> tuple[bool, list[str]]:
-        """Check availability of plain-text SITREP reports from all 4 specialist agents."""
-        required_agents = [
-            "agent_analysis",
-            "agent_core",
-            "agent_risk",
-            "agent_market_intel",
-        ]
-
-        issues: list[str] = []
-
-        for name in required_agents:
-            payload = reports.get(name)
-            if not isinstance(payload, dict) or not payload:
-                issues.append(f"{name}:missing_payload")
-                continue
-
-            text = str(payload.get("text", "")).strip()
-            if not text:
-                issues.append(f"{name}:empty_text")
-                continue
-
-            if text == "AGENT DOWN - NO DATA GATHERED":
-                issues.append(f"{name}:agent_down")
-
-        return (len(issues) == 0), issues
-
-
-    def _repair_malformed_json_text(self, text: str) -> str:
-        """Attempt lightweight repair for common model JSON glitches."""
-        t = str(text or "")
-        # fix patterns like: "confidence": , 45,
-        t = re.sub(r'(:\s*),\s*(-?\d+(?:\.\d+)?)\s*,', r'\1 \2,', t)
-        # remove trailing commas before object/array close
-        t = re.sub(r',\s*([}\]])', r'\1', t)
-        return t
-
-    def _inflate_dotted_keys(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Convert dotted keys (e.g. Decision.Direction) into nested dict form (case-insensitive)."""
-        if not isinstance(data, dict):
-            return data
-
-        out: Dict[str, Any] = dict(data)
-
-        # map keys case-insensitively
-        keymap = {str(k).lower(): k for k in list(out.keys())}
-
-        # Decision.Direction variants
-        dd_key = keymap.get("decision.direction")
-        if dd_key is not None:
-            decision = out.get("Decision") if isinstance(out.get("Decision"), dict) else {}
-            decision["Direction"] = out.pop(dd_key)
-            out["Decision"] = decision
-
-        # Analysis.Core.Risk variants
-        acr_key = keymap.get("analysis.core.risk")
-        if acr_key is not None:
-            analysis = out.get("Analysis") if isinstance(out.get("Analysis"), dict) else {}
-            core = analysis.get("Core") if isinstance(analysis.get("Core"), dict) else {}
-            core["Risk"] = out.pop(acr_key)
-            analysis["Core"] = core
-            out["Analysis"] = analysis
-
-        return out
-
     def _extract_hakim_json(self, text: str) -> Optional[Dict[str, Any]]:
-        """Extract Hakim JSON robustly; accept final_decision OR Decision.Direction schema."""
+        """Extract Hakim final JSON robustly; only accept object containing final_decision."""
         if not text:
             return None
 
@@ -425,7 +304,7 @@ class AgentsOrchestrator:
         # Fast-path strict JSON
         try:
             obj = json.loads(t)
-            if isinstance(obj, dict) and ('final_decision' in obj or (isinstance(obj.get('Decision'), dict) and obj.get('Decision', {}).get('Direction'))):
+            if isinstance(obj, dict) and 'final_decision' in obj:
                 return obj
         except Exception:
             pass
@@ -441,7 +320,7 @@ class AgentsOrchestrator:
                 continue
             try:
                 obj, end = decoder.raw_decode(t[i:])
-                if isinstance(obj, dict) and ('final_decision' in obj or (isinstance(obj.get('Decision'), dict) and obj.get('Decision', {}).get('Direction'))):
+                if isinstance(obj, dict) and 'final_decision' in obj:
                     best = obj
                 i += max(end, 1)
             except Exception:
@@ -449,196 +328,33 @@ class AgentsOrchestrator:
 
         return best
 
-    def _synthesize_mandatory_risk_block(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Ensure Analysis.Core.Risk exists even when model omits it."""
-        out = dict(data or {})
-
-        analysis = out.get("Analysis") if isinstance(out.get("Analysis"), dict) else out.get("analysis", {})
-        if not isinstance(analysis, dict):
-            analysis = {}
-
-        core = analysis.get("Core") if isinstance(analysis.get("Core"), dict) else analysis.get("core", {})
-        if not isinstance(core, dict):
-            core = {}
-
-        risk = core.get("Risk") if isinstance(core.get("Risk"), dict) else core.get("risk", {})
-        if not isinstance(risk, dict):
-            risk = {}
-
-        # infer fields when missing
-        consensus = out.get("consensus_report", {}) if isinstance(out.get("consensus_report"), dict) else {}
-        exec_payload = out.get("execution_payload", {}) if isinstance(out.get("execution_payload"), dict) else {}
-
-        risk_level = risk.get("Risk_Level") or risk.get("risk_level") or risk.get("level")
-        if not risk_level:
-            risk_status = str(consensus.get("risk_status", "")).upper()
-            risk_level = "HIGH" if risk_status == "VETOED" else "MEDIUM"
-
-        stop_logic = risk.get("Stop_Loss_Logic") or risk.get("stop_loss_logic")
-        if not stop_logic:
-            sl = exec_payload.get("stop_loss")
-            stop_logic = f"Fallback derived from execution payload stop_loss={sl}" if sl not in (None, "") else "Fallback derived from system risk controls"
-
-        invalidation = risk.get("Invalidation_Point") or risk.get("invalidation_point")
-        if not invalidation:
-            sl = exec_payload.get("stop_loss")
-            invalidation = f"Invalid if price breaks protective stop_loss {sl}" if sl not in (None, "") else "Invalidation fallback: market structure break"
-
-        core["Risk"] = {
-            "Risk_Level": str(risk_level),
-            "Stop_Loss_Logic": str(stop_logic),
-            "Invalidation_Point": str(invalidation),
-        }
-        analysis["Core"] = core
-        out["Analysis"] = analysis
-        return out
-
-    def validate_judge_output(self, raw_response_text: str) -> Dict[str, Any]:
-        try:
-            clean_json = str(raw_response_text or "").replace("```json", "").replace("```", "").strip()
-            clean_json = self._repair_malformed_json_text(clean_json)
-            try:
-                data = json.loads(clean_json)
-                if not isinstance(data, dict):
-                    raise ValueError("Judge output root must be a JSON object.")
-            except json.JSONDecodeError:
-                extracted = self._extract_hakim_json(clean_json)
-                if not isinstance(extracted, dict):
-                    raise ValueError("Judge output is not valid JSON. Format hallucination occurred.")
-                data = extracted
-
-            data = self._inflate_dotted_keys(data)
-            data = self._synthesize_mandatory_risk_block(data)
-
-            # Legacy adaptation: map final_decision to Decision.Direction for strict validation
-            if "Decision" not in data and "final_decision" in data:
-                fd = str(data.get("final_decision", "")).upper().strip()
-                dir_map = {"BUY": "LONG", "SELL": "SHORT", "HOLD": "NEUTRAL"}
-                data["Decision"] = {"Direction": dir_map.get(fd, "NEUTRAL")}
-
-            decision = data.get("Decision", {}).get("Direction")
-            if not decision or decision not in ["LONG", "SHORT", "NEUTRAL"]:
-                raise ValueError("Hakim failed to provide an absolute direction (LONG/SHORT/NEUTRAL).")
-
-            analysis_obj = data.get("Analysis") if isinstance(data.get("Analysis"), dict) else data.get("analysis", {})
-            if not isinstance(analysis_obj, dict):
-                analysis_obj = {}
-
-            core_analysis = analysis_obj.get("Core") if isinstance(analysis_obj.get("Core"), dict) else analysis_obj.get("core", {})
-            if not isinstance(core_analysis, dict):
-                core_analysis = {}
-
-            risk_block = core_analysis.get("Risk") if isinstance(core_analysis.get("Risk"), dict) else core_analysis.get("risk", {})
-            if not isinstance(risk_block, dict):
-                risk_block = {}
-
-            risk_level = risk_block.get("Risk_Level") or risk_block.get("risk_level") or risk_block.get("level")
-            stop_logic = risk_block.get("Stop_Loss_Logic") or risk_block.get("stop_loss_logic")
-            invalidation = risk_block.get("Invalidation_Point") or risk_block.get("invalidation_point")
-
-            if not risk_block or not risk_level:
-                raise ValueError("CRITICAL: Judge attempted to skip! 'Analysis/Core/Risk' signal is missing or empty.")
-
-            # keep strict requirement complete fields
-            if not stop_logic or not invalidation:
-                raise ValueError("CRITICAL: Judge risk block incomplete. Missing Stop_Loss_Logic or Invalidation_Point.")
-
-            return data
-        except json.JSONDecodeError:
-            raise ValueError("Judge output is not valid JSON. Format hallucination occurred.")
-        except Exception as e:
-            raise Exception(f"VALIDATION FAILED: {str(e)}")
-
-    def _map_validated_judge_to_manager_schema(
-        self,
-        validated: Dict[str, Any],
-        params: Dict[str, float],
-        current_price: Optional[float],
-    ) -> Dict[str, Any]:
-        direction = str(validated.get("Decision", {}).get("Direction", "NEUTRAL")).upper().strip()
-        final_decision = {"LONG": "BUY", "SHORT": "SELL", "NEUTRAL": "HOLD"}.get(direction, "HOLD")
-
-        risk_block = validated.get("Analysis", {}).get("Core", {}).get("Risk", {}) if isinstance(validated.get("Analysis", {}), dict) else {}
-
-        def _f(v: Any, d: float = 0.0) -> float:
-            try:
-                return float(v)
-            except Exception:
-                return float(d)
-
-        conf = _f(validated.get("confidence", validated.get("Decision", {}).get("Confidence", 45)), 45)
-        if 0 < conf <= 1:
-            conf *= 100.0
-        conf = max(0.0, min(100.0, conf))
-
-        sl = _f((validated.get("execution_payload") or {}).get("stop_loss", risk_block.get("Stop_Loss", params.get("sl_math", 0))), params.get("sl_math", 0))
-        tp = _f((validated.get("execution_payload") or {}).get("take_profit", risk_block.get("Take_Profit", params.get("tp_math", 0))), params.get("tp_math", 0))
-        if sl == 0:
-            sl = _f(params.get("sl_math", 0), 0)
-        if tp == 0:
-            tp = _f(params.get("tp_math", 0), 0)
-
-        exec_payload = validated.get("execution_payload") if isinstance(validated.get("execution_payload"), dict) else {}
-        if not exec_payload:
-            exec_payload = {
-                "symbol": "BTCUSDT",
-                "side": "Buy" if final_decision == "BUY" else "Sell",
-                "order_type": "Market",
-                "leverage": int(params.get("leverage_math", 10)),
-                "entry": _f(current_price or params.get("current_price", 0), params.get("current_price", 0)),
-                "stop_loss": sl,
-                "take_profit": tp,
-                "position_size_pct": 100,
-            }
-
-        consensus_report = validated.get("consensus_report") if isinstance(validated.get("consensus_report"), dict) else {
-            "technical_alignment": "LOW" if final_decision == "HOLD" else "MEDIUM",
-            "risk_status": "VETOED" if str(risk_block.get("Risk_Level", "")).upper() in {"HIGH", "CRITICAL"} else "CLEARED",
-            "logic_summary": "judge_validated_output",
-        }
-
-        return {
-            "final_decision": final_decision,
-            "confidence": conf,
-            "execution_payload": exec_payload,
-            "consensus_report": consensus_report,
-            "reasoning": str(validated.get("Reasoning", validated.get("reasoning", "judge_validated"))),
-            "Analysis": validated.get("Analysis", {}),
-            "Decision": validated.get("Decision", {}),
-        }
-
-
-    def compile_intelligence_briefing(self, analysis_text, core_text, market_intel_text, risk_text):
-        """
-        Compiles the plain-text reports from the 4 specialized sub-bots into a single briefing for The Judge.
-        NO JSON parsing is done here.
-        """
-        briefing = f"""
-=== MARKET INTELLIGENCE BRIEFING ===
-
->>> [1] ANALYSIS AGENT REPORT:
-{analysis_text.strip()}
-
->>> [2] CORE AGENT REPORT:
-{core_text.strip()}
-
->>> [3] MARKET INTELLIGENCE AGENT REPORT:
-{market_intel_text.strip()}
-
->>> [4] RISK AGENT REPORT:
-{risk_text.strip()}
-
-====================================
-        """
-        return briefing
 
     def _compile_manager_template(self, reports: Dict[str, Dict[str, Any]]) -> str:
-        """Build plain-text intelligence briefing from four field analysts."""
-        analysis_text = str((reports.get("agent_analysis") or {}).get("text") or "AGENT DOWN - NO DATA GATHERED")
-        core_text = str((reports.get("agent_core") or {}).get("text") or "AGENT DOWN - NO DATA GATHERED")
-        market_intel_text = str((reports.get("agent_market_intel") or {}).get("text") or "AGENT DOWN - NO DATA GATHERED")
-        risk_text = str((reports.get("agent_risk") or {}).get("text") or "AGENT DOWN - NO DATA GATHERED")
-        return self.compile_intelligence_briefing(analysis_text, core_text, market_intel_text, risk_text)
+        """Compile specialist outputs into exact manager template string."""
+        agent_analysis_json = json.dumps(
+            reports.get("agent_analysis", self.SAFE_FALLBACK), ensure_ascii=False
+        )
+        agent_core_json = json.dumps(
+            reports.get("agent_core", self.SAFE_FALLBACK), ensure_ascii=False
+        )
+        agent_risk_json = json.dumps(
+            reports.get("agent_risk", self.SAFE_FALLBACK), ensure_ascii=False
+        )
+        agent_market_intel_json = json.dumps(
+            reports.get("agent_market_intel", self.SAFE_FALLBACK), ensure_ascii=False
+        )
+
+        return (
+            "[SYSTEM: All agents have submitted their reports. Review the data below and output your final JSON decision.]\n\n"
+            "### A. Analysis Agent Output\n"
+            f"{agent_analysis_json}\n\n"
+            "### B. Core Agent Output\n"
+            f"{agent_core_json}\n\n"
+            "### C. Risk Agent Output\n"
+            f"{agent_risk_json}\n\n"
+            "### D. Market Intelligence Agent Output\n"
+            f"{agent_market_intel_json}"
+        )
 
 
 
@@ -703,8 +419,6 @@ class AgentsOrchestrator:
         compiled_prompt: str,
         reports: Dict[str, Dict[str, Any]],
         current_price: Optional[float],
-        raw_market_data: Optional[Dict[str, Any]] = None,
-        reports_complete: bool = True,
     ) -> Dict[str, Any]:
         """Send compiled specialist report directly to Hakim using codex-specific executive prompt."""
         params = self._derive_hakim_math_params(reports, current_price)
@@ -775,32 +489,8 @@ JSON
     "technical_alignment": "HIGH | MEDIUM | LOW",
     "risk_status": "CLEARED | VETOED",
     "logic_summary": "<max_20_words>"
-  }},
-  "Decision": {{"Direction": "LONG | SHORT | NEUTRAL"}},
-  "Analysis": {{
-    "Core": {{
-      "Risk": {{
-        "Risk_Level": "LOW | MEDIUM | HIGH",
-        "Stop_Loss_Logic": "string",
-        "Invalidation_Point": "string"
-      }}
-    }}
   }}
-}}
-
-{self.STRICT_OVERRIDE}
-
-[STRICT JSON MINIMUM]
-- You MUST include `Decision.Direction` as LONG | SHORT | NEUTRAL.
-- You MUST include `Analysis.Core.Risk` with Risk_Level, Stop_Loss_Logic, Invalidation_Point.
-"""
-
-        if not reports_complete:
-            compiled_prompt = (
-                "WARNING: SUB-BOT REPORTS CORRUPTED/PARTIAL. IGNORE THEM. RELY EXCLUSIVELY ON RAW MARKET DATA TO MAKE YOUR DECISION.\n\n"
-                f"RAW_MARKET_DATA:\n{json.dumps(raw_market_data or {}, ensure_ascii=False)}\n\n"
-                f"{compiled_prompt}"
-            )
+}}"""
 
         try:
             response = await self.model_manager.query_async(
@@ -810,32 +500,11 @@ JSON
                 temperature=0.05,
                 max_tokens=1200,
             )
-            validated = self.validate_judge_output(str(response))
-            if isinstance(validated, dict):
-                return self._map_validated_judge_to_manager_schema(validated, params, current_price)
+            parsed = self._extract_hakim_json(str(response))
+            if isinstance(parsed, dict):
+                return parsed
         except Exception as exc:
-            self.logger.warning("Hakim first-pass validation failed, attempting one repair retry: %s", exc)
-            try:
-                repair_prompt = (
-                    "Your previous output failed strict validation. "
-                    "Return ONLY corrected JSON now. "
-                    "Mandatory: Decision.Direction (LONG|SHORT|NEUTRAL) and Analysis.Core.Risk with "
-                    "Risk_Level, Stop_Loss_Logic, Invalidation_Point.\n\n"
-                    f"ORIGINAL_PROMPT_CONTEXT:\n{compiled_prompt}\n\n"
-                    f"BROKEN_OUTPUT:\n{str(response) if 'response' in locals() else ''}"
-                )
-                repaired = await self.model_manager.query_async(
-                    prompt=repair_prompt,
-                    system_prompt=strict_system,
-                    model=None,
-                    temperature=0.0,
-                    max_tokens=1200,
-                )
-                validated = self.validate_judge_output(str(repaired))
-                if isinstance(validated, dict):
-                    return self._map_validated_judge_to_manager_schema(validated, params, current_price)
-            except Exception as exc2:
-                self.logger.error("Hakim direct call failed: %s", exc2)
+            self.logger.error("Hakim direct call failed: %s", exc)
 
         return {"final_decision": "HOLD", "confidence": 35, "reasoning": "hakim_invalid_json"}
 
